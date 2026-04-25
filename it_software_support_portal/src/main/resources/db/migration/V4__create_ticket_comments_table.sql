@@ -1,6 +1,6 @@
 CREATE TABLE ticket_comments
 (
-    id           BIGINT PRIMARY KEY,
+    id           BIGSERIAL PRIMARY KEY,
     comment      TEXT      NOT NULL,
     created_at   TIMESTAMP NOT NULL,
 

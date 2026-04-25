@@ -1,6 +1,6 @@
 CREATE TABLE tickets
 (
-    id              BIGINT PRIMARY KEY,
+    id              BIGSERIAL PRIMARY KEY,
     ticket_number   VARCHAR(100) UNIQUE NOT NULL,
     title           VARCHAR(255)        NOT NULL,
     description     TEXT                NOT NULL,
