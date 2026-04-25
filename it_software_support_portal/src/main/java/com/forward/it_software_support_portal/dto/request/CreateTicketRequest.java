@@ -7,28 +7,33 @@ import lombok.Data;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 
+import java.time.LocalDateTime;
+
 @Data
 public class CreateTicketRequest {
 
-    @NotBlank(message = "Title is required")
+    @NotBlank
     private String title;
 
-    @NotBlank(message = "Description is required")
+    @NotBlank
     private String description;
 
-    @NotNull(message = "Issue type is required")
+    @NotNull
     private IssueType issueType;
 
-    @NotNull(message = "Priority is required")
+    @NotNull
     private Priority priority;
 
-    @NotNull(message = "Raised by user id is required")
+    private String businessImpact;
+
+    private LocalDateTime expectedBy;
+
+    @NotNull
     private Long raisedByUserId;
 
+    @NotNull
     private Long assignedToUserId;
 
-    @NotNull(message = "Application id is required")
+    @NotNull
     private Long applicationId;
-
-    private String businessImpact;
 }

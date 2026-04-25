@@ -16,9 +16,12 @@ public class TicketResponse {
     private String issueType;
     private String priority;
     private String status;
-    private String applicationName;
+    private String businessImpact;
+    private LocalDateTime expectedBy;
+    private LocalDateTime createdAt;
+    private LocalDateTime updatedAt;
+    private LocalDateTime resolvedAt;
     private String raisedBy;
     private String assignedTo;
-    private String businessImpact;
-    private LocalDateTime createdAt;
+    private String applicationName;
 }

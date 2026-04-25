@@ -48,15 +48,15 @@ public class Ticket {
 
     private LocalDateTime resolvedAt;
 
-//    @ManyToOne
-//    @JoinColumn(name = "raised_by")
-//    private User raisedBy;
-//
-//    @ManyToOne
-//    @JoinColumn(name = "assigned_to")
-//    private User assignedTo;
-//
-//    @ManyToOne
-//    @JoinColumn(name = "application_id")
-//    private Application application;
+    @ManyToOne
+    @JoinColumn(name = "raised_by")
+    private User raisedBy;
+
+    @ManyToOne
+    @JoinColumn(name = "assigned_to")
+    private User assignedTo;
+
+    @ManyToOne
+    @JoinColumn(name = "application_id")
+    private Application application;
 }

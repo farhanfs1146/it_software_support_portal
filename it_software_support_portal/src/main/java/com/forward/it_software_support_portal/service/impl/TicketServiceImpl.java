@@ -17,6 +17,7 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.util.List;
 
+
 @Service
 @RequiredArgsConstructor
 public class TicketServiceImpl implements TicketService {
@@ -31,11 +32,8 @@ public class TicketServiceImpl implements TicketService {
         User raisedBy = userRepository.findById(request.getRaisedByUserId())
                 .orElseThrow(() -> new RuntimeException("Raised by user not found"));
 
-        User assignedTo = null;
-        if (request.getAssignedToUserId() != null) {
-            assignedTo = userRepository.findById(request.getAssignedToUserId())
-                    .orElseThrow(() -> new RuntimeException("Assigned user not found"));
-        }
+        User assignedTo = userRepository.findById(request.getAssignedToUserId())
+                .orElseThrow(() -> new RuntimeException("Assigned user not found"));
 
         Application application = applicationRepository.findById(request.getApplicationId())
                 .orElseThrow(() -> new RuntimeException("Application not found"));
@@ -47,16 +45,17 @@ public class TicketServiceImpl implements TicketService {
         ticket.setIssueType(request.getIssueType());
         ticket.setPriority(request.getPriority());
         ticket.setStatus(TicketStatus.OPEN);
-//        ticket.setRaisedBy(raisedBy);
-//        ticket.setAssignedTo(assignedTo);
-//        ticket.setApplication(application);
         ticket.setBusinessImpact(request.getBusinessImpact());
+        ticket.setExpectedBy(request.getExpectedBy());
         ticket.setCreatedAt(LocalDateTime.now());
         ticket.setUpdatedAt(LocalDateTime.now());
+        ticket.setRaisedBy(raisedBy);
+        ticket.setAssignedTo(assignedTo);
+        ticket.setApplication(application);
 
-        Ticket savedTicket = ticketRepository.save(ticket);
+        Ticket saved = ticketRepository.save(ticket);
 
-        return mapToResponse(savedTicket);
+        return mapToResponse(saved);
     }
 
     @Override
@@ -71,10 +70,10 @@ public class TicketServiceImpl implements TicketService {
 
     @Override
     public TicketResponse getTicketById(Long id) {
-        Ticket ticket = ticketRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Ticket not found"));
-
-        return mapToResponse(ticket);
+        return mapToResponse(
+                ticketRepository.findById(id)
+                        .orElseThrow(() -> new RuntimeException("Ticket not found"))
+        );
     }
 
     @Override
@@ -94,13 +93,14 @@ public class TicketServiceImpl implements TicketService {
                 .issueType(ticket.getIssueType().name())
                 .priority(ticket.getPriority().name())
                 .status(ticket.getStatus().name())
-//                .applicationName(ticket.getApplication().getAppName())
-//                .raisedBy(ticket.getRaisedBy().getFullName())
-//                .assignedTo(ticket.getAssignedTo() != null
-//                        ? ticket.getAssignedTo().getFullName()
-//                        : null)
                 .businessImpact(ticket.getBusinessImpact())
+                .expectedBy(ticket.getExpectedBy())
                 .createdAt(ticket.getCreatedAt())
+                .updatedAt(ticket.getUpdatedAt())
+                .resolvedAt(ticket.getResolvedAt())
+                .raisedBy(ticket.getRaisedBy().getFullName())
+                .assignedTo(ticket.getAssignedTo().getFullName())
+                .applicationName(ticket.getApplication().getAppName())
                 .build();
     }
 }
