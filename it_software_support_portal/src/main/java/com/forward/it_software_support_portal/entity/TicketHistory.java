@@ -24,11 +24,11 @@ public class TicketHistory {
 
     private LocalDateTime actionTime;
 
-    @ManyToOne
-    @JoinColumn(name = "ticket_id")
-    private Ticket ticket;
-
-    @ManyToOne
-    @JoinColumn(name = "performed_by")
-    private User performedBy;
+//    @ManyToOne
+//    @JoinColumn(name = "ticket_id")
+//    private Ticket ticket;
+//
+//    @ManyToOne
+//    @JoinColumn(name = "performed_by")
+//    private User performedBy;
 }

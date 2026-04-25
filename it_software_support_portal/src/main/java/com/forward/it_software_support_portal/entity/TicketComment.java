@@ -21,11 +21,11 @@ public class TicketComment {
 
     private LocalDateTime createdAt;
 
-    @ManyToOne
-    @JoinColumn(name = "ticket_id")
-    private Ticket ticket;
-
-    @ManyToOne
-    @JoinColumn(name = "commented_by")
-    private User commentedBy;
+//    @ManyToOne
+//    @JoinColumn(name = "ticket_id")
+//    private Ticket ticket;
+//
+//    @ManyToOne
+//    @JoinColumn(name = "commented_by")
+//    private User commentedBy;
 }

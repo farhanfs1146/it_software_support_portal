@@ -47,9 +47,9 @@ public class TicketServiceImpl implements TicketService {
         ticket.setIssueType(request.getIssueType());
         ticket.setPriority(request.getPriority());
         ticket.setStatus(TicketStatus.OPEN);
-        ticket.setRaisedBy(raisedBy);
-        ticket.setAssignedTo(assignedTo);
-        ticket.setApplication(application);
+//        ticket.setRaisedBy(raisedBy);
+//        ticket.setAssignedTo(assignedTo);
+//        ticket.setApplication(application);
         ticket.setBusinessImpact(request.getBusinessImpact());
         ticket.setCreatedAt(LocalDateTime.now());
         ticket.setUpdatedAt(LocalDateTime.now());
@@ -94,11 +94,11 @@ public class TicketServiceImpl implements TicketService {
                 .issueType(ticket.getIssueType().name())
                 .priority(ticket.getPriority().name())
                 .status(ticket.getStatus().name())
-                .applicationName(ticket.getApplication().getAppName())
-                .raisedBy(ticket.getRaisedBy().getFullName())
-                .assignedTo(ticket.getAssignedTo() != null
-                        ? ticket.getAssignedTo().getFullName()
-                        : null)
+//                .applicationName(ticket.getApplication().getAppName())
+//                .raisedBy(ticket.getRaisedBy().getFullName())
+//                .assignedTo(ticket.getAssignedTo() != null
+//                        ? ticket.getAssignedTo().getFullName()
+//                        : null)
                 .businessImpact(ticket.getBusinessImpact())
                 .createdAt(ticket.getCreatedAt())
                 .build();

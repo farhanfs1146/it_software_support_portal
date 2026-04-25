@@ -24,7 +24,7 @@ public class TicketAttachment {
 
     private LocalDateTime uploadedAt;
 
-    @ManyToOne
-    @JoinColumn(name = "ticket_id")
-    private Ticket ticket;
+//    @ManyToOne
+//    @JoinColumn(name = "ticket_id")
+//    private Ticket ticket;
 }
