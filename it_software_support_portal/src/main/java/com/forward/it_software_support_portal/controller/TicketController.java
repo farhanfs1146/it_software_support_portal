@@ -2,6 +2,7 @@ package com.forward.it_software_support_portal.controller;
 
 import com.forward.it_software_support_portal.dto.request.CreateTicketRequest;
 import com.forward.it_software_support_portal.dto.response.TicketResponse;
+import com.forward.it_software_support_portal.enums.TicketStatus;
 import com.forward.it_software_support_portal.service.TicketService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -23,12 +24,28 @@ public class TicketController {
     }
 
     @GetMapping("/{id}")
-    public TicketResponse getTicketById(@PathVariable Long id) {
+    public TicketResponse getById(@PathVariable Long id) {
         return ticketService.getTicketById(id);
     }
 
     @GetMapping
-    public List<TicketResponse> getAllTickets() {
+    public List<TicketResponse> getAll() {
         return ticketService.getAllTickets();
+    }
+
+    @PutMapping("/{ticketId}/assign/{userId}")
+    public TicketResponse assignTicket(
+            @PathVariable Long ticketId,
+            @PathVariable Long userId
+    ) {
+        return ticketService.assignTicket(ticketId, userId);
+    }
+
+    @PatchMapping("/{ticketId}/status")
+    public TicketResponse updateStatus(
+            @PathVariable Long ticketId,
+            @RequestParam TicketStatus status
+    ) {
+        return ticketService.updateStatus(ticketId, status);
     }
 }
