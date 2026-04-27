@@ -1,4 +1,4 @@
-package com.forward.it_software_support_portal.dto.response.application;
+package com.forward.it_software_support_portal.dto.response;
 
 import lombok.Builder;
 import lombok.Data;

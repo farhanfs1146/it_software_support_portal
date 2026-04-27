@@ -1,4 +1,4 @@
-package com.forward.it_software_support_portal.dto.request.user;
+package com.forward.it_software_support_portal.dto.request;
 
 import com.forward.it_software_support_portal.enums.Role;
 import jakarta.validation.constraints.Email;

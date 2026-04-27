@@ -1,4 +1,4 @@
-package com.forward.it_software_support_portal.dto.request.application;
+package com.forward.it_software_support_portal.dto.request;
 
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;

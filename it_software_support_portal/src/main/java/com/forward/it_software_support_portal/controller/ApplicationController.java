@@ -1,7 +1,7 @@
 package com.forward.it_software_support_portal.controller;
 
-import com.forward.it_software_support_portal.dto.request.application.CreateApplicationRequest;
-import com.forward.it_software_support_portal.dto.response.application.ApplicationResponse;
+import com.forward.it_software_support_portal.dto.request.CreateApplicationRequest;
+import com.forward.it_software_support_portal.dto.response.ApplicationResponse;
 import com.forward.it_software_support_portal.service.ApplicationService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;

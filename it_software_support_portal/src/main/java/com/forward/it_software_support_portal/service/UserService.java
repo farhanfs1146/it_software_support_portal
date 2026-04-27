@@ -1,7 +1,7 @@
 package com.forward.it_software_support_portal.service;
 
-import com.forward.it_software_support_portal.dto.request.user.CreateUserRequest;
-import com.forward.it_software_support_portal.dto.response.user.UserResponse;
+import com.forward.it_software_support_portal.dto.request.CreateUserRequest;
+import com.forward.it_software_support_portal.dto.response.UserResponse;
 
 import java.util.List;
 

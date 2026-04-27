@@ -1,8 +1,8 @@
 package com.forward.it_software_support_portal.service.impl;
 
 
-import com.forward.it_software_support_portal.dto.request.user.CreateUserRequest;
-import com.forward.it_software_support_portal.dto.response.user.UserResponse;
+import com.forward.it_software_support_portal.dto.request.CreateUserRequest;
+import com.forward.it_software_support_portal.dto.response.UserResponse;
 import com.forward.it_software_support_portal.entity.User;
 import com.forward.it_software_support_portal.repository.UserRepository;
 import com.forward.it_software_support_portal.service.UserService;
