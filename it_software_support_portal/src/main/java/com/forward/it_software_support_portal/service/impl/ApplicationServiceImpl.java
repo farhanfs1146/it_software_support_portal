@@ -23,7 +23,7 @@ public class ApplicationServiceImpl implements ApplicationService {
         app.setAppName(request.getAppName());
         app.setModuleName(request.getModuleName());
 //        app.setDescription(request.getDescription());
-        app.setActive(true);
+        app.setActive(request.getActive());
 
         Application saved = applicationRepository.save(app);
 
@@ -65,6 +65,7 @@ public class ApplicationServiceImpl implements ApplicationService {
 
         app.setAppName(request.getAppName());
         app.setModuleName(request.getModuleName());
+        app.setActive(request.getActive());
 //        app.setDescription(request.getDescription());
 
         Application updated = applicationRepository.save(app);
