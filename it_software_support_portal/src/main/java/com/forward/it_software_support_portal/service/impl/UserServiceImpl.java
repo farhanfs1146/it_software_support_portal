@@ -34,8 +34,8 @@ public class UserServiceImpl implements UserService {
         user.setEmployeeCode(request.getEmployeeCode());
         user.setFullName(request.getFullName());
         user.setEmail(request.getEmail());
-        user.setDepartment(request.getDepartment());
-        user.setDesignation(request.getDesignation());
+        user.setDepartment_id(request.getDepartment_id());
+        user.setDesignation_id(request.getDesignation_id());
         user.setRole(request.getRole());
         user.setActive(true);
 
@@ -68,8 +68,8 @@ public class UserServiceImpl implements UserService {
                 .employeeCode(user.getEmployeeCode())
                 .fullName(user.getFullName())
                 .email(user.getEmail())
-                .department(user.getDepartment())
-                .designation(user.getDesignation())
+                .department_id(user.getDepartment_id())
+                .designation_id(user.getDesignation_id())
                 .role(user.getRole().name())
                 .active(user.isActive())
                 .build();

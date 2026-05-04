@@ -9,11 +9,11 @@ import lombok.Data;
 public class UserResponse {
 
     private Long id;
-    private String employeeCode;
+    private Long employeeCode;
     private String fullName;
     private String email;
-    private String department;
-    private String designation;
+    private Long department_id;
+    private Long designation_id;
     private String role;
     private Boolean active;
 }

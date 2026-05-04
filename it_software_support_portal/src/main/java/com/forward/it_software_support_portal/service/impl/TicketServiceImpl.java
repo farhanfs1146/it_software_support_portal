@@ -35,10 +35,10 @@ public class TicketServiceImpl implements TicketService {
     @Override
     public TicketResponse createTicket(CreateTicketRequest request) {
 
-        User raisedBy = userRepository.findById(request.getRaisedByUserId())
+        User raisedBy = userRepository.findById(13411L)
                 .orElseThrow(() -> new RuntimeException("Raised by user not found"));
 
-        User assignedTo = userRepository.findById(request.getAssignedToUserId())
+        User assignedTo = userRepository.findById(13411L)
                 .orElseThrow(() -> new RuntimeException("Assigned user not found"));
 
         Application application = applicationRepository.findById(request.getApplicationId())
@@ -55,6 +55,7 @@ public class TicketServiceImpl implements TicketService {
         ticket.setExpectedBy(request.getExpectedBy());
         ticket.setCreatedAt(LocalDateTime.now());
         ticket.setUpdatedAt(LocalDateTime.now());
+        // we will set them later
         ticket.setRaisedBy(raisedBy);
         ticket.setAssignedTo(assignedTo);
         ticket.setApplication(application);

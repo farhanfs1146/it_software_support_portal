@@ -28,12 +28,23 @@ public class CreateTicketRequest {
 
     private LocalDateTime expectedBy;
 
-    @NotNull
-    private Long raisedByUserId;
+    // we will get the user id or login user id dynamically, this is best approach rather than to ask user to set id etc.
+    // we will set this id by log-in users not asked users.
+//    @NotNull
+//    private Long raisedByUserId;
 
-    @NotNull
-    private Long assignedToUserId;
+    // This will be null for now, because while raising ticket by any-user doesn't fit the approach to assign to developer,
+    // After the HOD/Manager of IT department will allow to assign the required task to the developer.
+    // By selecting the drop-down of active developers.
+    // we will set this later by actions of authorized persons not users while creating ticket.
+//    @NotNull
+//    private Long assignedToUserId;
 
+    // Applicant have to mention clearly which application having issue.
     @NotNull
     private Long applicationId;
+
+    // Missing important thing is which module of selected application facing issue.
+    @NotNull
+    private String moduleName;
 }

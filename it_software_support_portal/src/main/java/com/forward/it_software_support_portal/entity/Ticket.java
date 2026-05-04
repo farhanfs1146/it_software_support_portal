@@ -1,7 +1,5 @@
 package com.forward.it_software_support_portal.entity;
 
-import com.forward.it_software_support_portal.entity.Application;
-import com.forward.it_software_support_portal.entity.User;
 import com.forward.it_software_support_portal.enums.IssueType;
 import com.forward.it_software_support_portal.enums.Priority;
 import com.forward.it_software_support_portal.enums.TicketStatus;
@@ -49,7 +47,7 @@ public class Ticket {
     private LocalDateTime resolvedAt;
 
     @ManyToOne
-    @JoinColumn(name = "raised_by")
+    @JoinColumn(name = "raised_by", nullable = false)
     private User raisedBy;
 
     @ManyToOne
@@ -57,6 +55,9 @@ public class Ticket {
     private User assignedTo;
 
     @ManyToOne
-    @JoinColumn(name = "application_id")
+    @JoinColumn(name = "application_id", nullable = false)
     private Application application;
+
+    @Column(name = "module_name", nullable = false, length = 100)
+    private String moduleName;
 }

@@ -10,7 +10,7 @@ import lombok.Data;
 public class CreateUserRequest {
 
     @NotBlank(message = "Employee code is required")
-    private String employeeCode;
+    private Long employeeCode;
 
     @NotBlank(message = "Full name is required")
     private String fullName;
@@ -20,10 +20,10 @@ public class CreateUserRequest {
     private String email;
 
     @NotBlank(message = "Department is required")
-    private String department;
+    private Long department_id;
 
     @NotBlank(message = "Designation is required")
-    private String designation;
+    private Long designation_id;
 
     @NotNull(message = "Role is required")
     private Role role;

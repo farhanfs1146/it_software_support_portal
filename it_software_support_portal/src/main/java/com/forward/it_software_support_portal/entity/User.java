@@ -15,15 +15,15 @@ public class User {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    private String employeeCode;
+    private Long employeeCode;
 
     private String fullName;
 
     private String email;
 
-    private String department;
+    private Long department_id;
 
-    private String designation;
+    private Long designation_id;
 
     @Enumerated(EnumType.STRING)
     private Role role;
