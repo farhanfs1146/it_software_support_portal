@@ -24,12 +24,16 @@ public class User {
     @Column(name = "email",nullable = false, length = 150)
     private String email;
 
-    private Long department_id;
+    @Column(name = "department_id")
+    private Long departmentId;
 
-    private Long designation_id;
+    @Column(name = "designation_id")
+    private Long designationId;
 
+    @Column(name = "role", nullable = false)
     @Enumerated(EnumType.STRING)
     private Role role;
 
-    private boolean active = true;
+    @Column(name = "active")
+    private Boolean active = true;
 }

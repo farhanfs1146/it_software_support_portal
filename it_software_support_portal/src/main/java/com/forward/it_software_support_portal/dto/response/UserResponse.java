@@ -12,8 +12,8 @@ public class UserResponse {
     private Long employeeCode;
     private String fullName;
     private String email;
-    private Long department_id;
-    private Long designation_id;
+    private Long departmentId;
+    private Long designationId;
     private String role;
     private Boolean active;
 }

@@ -20,24 +20,24 @@ public class UserServiceImpl implements UserService {
     @Override
     public UserResponse createUser(CreateUserRequest request) {
 
-        userRepository.findByEmail(request.getEmail())
-                .ifPresent(user -> {
-                    throw new RuntimeException("Email already exists");
-                });
-
         userRepository.findByEmployeeCode(request.getEmployeeCode())
                 .ifPresent(user -> {
                     throw new RuntimeException("Employee code already exists");
+                });
+
+        userRepository.findByEmail(request.getEmail())
+                .ifPresent(user -> {
+                    throw new RuntimeException("Email already exists");
                 });
 
         User user = new User();
         user.setEmployeeCode(request.getEmployeeCode());
         user.setFullName(request.getFullName());
         user.setEmail(request.getEmail());
-        user.setDepartment_id(request.getDepartment_id());
-        user.setDesignation_id(request.getDesignation_id());
+        user.setDepartmentId(request.getDepartmentId());
+        user.setDesignationId(request.getDesignationId());
         user.setRole(request.getRole());
-        user.setActive(true);
+        user.setActive(request.getActive());
 
         User savedUser = userRepository.save(user);
 
@@ -68,10 +68,10 @@ public class UserServiceImpl implements UserService {
                 .employeeCode(user.getEmployeeCode())
                 .fullName(user.getFullName())
                 .email(user.getEmail())
-                .department_id(user.getDepartment_id())
-                .designation_id(user.getDesignation_id())
+                .departmentId(user.getDepartmentId())
+                .designationId(user.getDesignationId())
                 .role(user.getRole().name())
-                .active(user.isActive())
+                .active(user.getActive())
                 .build();
     }
 }

@@ -35,11 +35,11 @@ public class TicketServiceImpl implements TicketService {
     @Override
     public TicketResponse createTicket(CreateTicketRequest request) {
 
-        User raisedBy = userRepository.findById(13411L)
+        User raisedBy = userRepository.findById(1L)
                 .orElseThrow(() -> new RuntimeException("Raised by user not found"));
 
-        User assignedTo = userRepository.findById(13411L)
-                .orElseThrow(() -> new RuntimeException("Assigned user not found"));
+//        User assignedTo = userRepository.findById(2L)
+//                .orElseThrow(() -> new RuntimeException("Assigned user not found"));
 
         Application application = applicationRepository.findById(request.getApplicationId())
                 .orElseThrow(() -> new RuntimeException("Application not found"));
@@ -55,10 +55,11 @@ public class TicketServiceImpl implements TicketService {
         ticket.setExpectedBy(request.getExpectedBy());
         ticket.setCreatedAt(LocalDateTime.now());
         ticket.setUpdatedAt(LocalDateTime.now());
-        // we will set them later
+        // we will set them later dynamically according to login users real-time/
         ticket.setRaisedBy(raisedBy);
-        ticket.setAssignedTo(assignedTo);
+//        ticket.setAssignedTo(assignedTo);
         ticket.setApplication(application);
+        ticket.setModuleName(request.getModuleName());
 
         Ticket saved = ticketRepository.save(ticket);
 
@@ -182,7 +183,7 @@ public class TicketServiceImpl implements TicketService {
                 .updatedAt(ticket.getUpdatedAt())
                 .resolvedAt(ticket.getResolvedAt())
                 .raisedBy(ticket.getRaisedBy().getFullName())
-                .assignedTo(ticket.getAssignedTo().getFullName())
+//                .assignedTo(ticket.getAssignedTo().getFullName())
                 .applicationName(ticket.getApplication().getAppName())
                 .build();
     }
