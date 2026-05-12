@@ -15,6 +15,4 @@ public class TicketMapper {
                 .status(ticket.getStatus().name())
                 .build();
     }
-
-
 }
