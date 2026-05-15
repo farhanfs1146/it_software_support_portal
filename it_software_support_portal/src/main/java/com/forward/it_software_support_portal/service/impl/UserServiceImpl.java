@@ -7,9 +7,10 @@ import com.forward.it_software_support_portal.entity.User;
 import com.forward.it_software_support_portal.repository.UserRepository;
 import com.forward.it_software_support_portal.service.UserService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
-
-import java.util.List;
 
 @Service
 @RequiredArgsConstructor
@@ -54,12 +55,13 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
-    public List<UserResponse> getAllUsers() {
+    public Page<UserResponse> getAllUsers(int page, int size, String searchTerm) {
 
-        return userRepository.findAll()
-                .stream()
-                .map(this::mapToResponse)
-                .toList();
+        Pageable pageable = PageRequest.of(page, size); // for pagination
+
+        // now extra feature of search is also added. we have to create its logic as well.
+        return userRepository.findByFullNameContainingIgnoreCase(searchTerm, pageable)
+                .map(this::mapToResponse);
     }
 
     private UserResponse mapToResponse(User user) {
