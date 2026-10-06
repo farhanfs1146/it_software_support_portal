@@ -19,6 +19,18 @@ public class Ticket {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    /**
+     * Optimistic locking for the Ticket aggregate (audit finding P1-4).
+     *
+     * <p>Ticket is the only entity this application mutates after creation, and the only one the
+     * audit showed taking concurrent writes, so it is the correct - and the only - place for a
+     * version column. Hibernate increments it on every update and refuses a write carrying a stale
+     * version, which surfaces as OptimisticLockingFailureException and then HTTP 409.
+     */
+    @Version
+    @Column(name = "version", nullable = false)
+    private Long version;
+
     @Column(unique = true)
     private String ticketNumber;
 
