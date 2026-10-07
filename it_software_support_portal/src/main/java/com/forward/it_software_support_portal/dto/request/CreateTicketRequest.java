@@ -6,6 +6,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 import jakarta.validation.constraints.NotNull;
 
 import java.time.LocalDateTime;
@@ -14,6 +15,7 @@ import java.time.LocalDateTime;
 public class CreateTicketRequest {
 
     @NotBlank(message = "Shorter & Descriptive title")
+    @Size(max = 100, message = "Title must be at most 100 characters")
     @Schema(description = "Shorter & Descriptive title of which problem you're facing")
     private String title;
 
@@ -29,6 +31,7 @@ public class CreateTicketRequest {
     @Schema(description = "Select in the drop-down whether ticket priority is low, high or critical very urgent etc.")
     private Priority priority;
 
+    @Size(max = 50, message = "Business impact must be at most 50 characters")
     @Schema(description = "select the impact of this ticket whether it is department-level, user-level")
     private String businessImpact;
 
@@ -40,6 +43,7 @@ public class CreateTicketRequest {
     private Long applicationId;
 
     @NotBlank(message = "select the module of selected application.")
+    @Size(max = 100, message = "Module name must be at most 100 characters")
     @Schema(description = "Which module of selected application facing issue.")
     private String moduleName;
 }

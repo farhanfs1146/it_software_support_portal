@@ -21,7 +21,7 @@ public class User {
     @Column(name = "full_name",nullable = false, length = 150)
     private String fullName;
 
-    @Column(name = "email",nullable = false, length = 150)
+    @Column(name = "email", nullable = false, length = 100)
     private String email;
 
     @Column(name = "department_id")
@@ -36,4 +36,14 @@ public class User {
 
     @Column(name = "active")
     private Boolean active = true;
+
+    /**
+     * BCrypt hash of the user's password, or null when no password has been set.
+     *
+     * <p>Null is the default and means the account cannot authenticate - enabling authentication
+     * must not hand every pre-existing user a usable login. Never returned through any DTO:
+     * UserResponse has no corresponding field, so there is no path by which a hash reaches a client.
+     */
+    @Column(name = "password_hash", length = 255)
+    private String passwordHash;
 }

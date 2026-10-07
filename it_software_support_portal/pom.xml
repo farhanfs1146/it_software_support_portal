@@ -68,6 +68,38 @@
 			<version>3.0.2</version>
 		</dependency>
 
+		<!--
+			Declared explicitly on purpose. The application relies directly on @Valid and the
+			jakarta.validation constraint annotations in dto/request/**, but hibernate-validator
+			was previously reaching the classpath only transitively through
+			springdoc-openapi-starter-common -> spring-boot-validation. Removing or upgrading
+			springdoc would have silently disabled every validation annotation with no error.
+			See docs/ARCHITECTURE_AUDIT.md finding P1-9.
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-validation</artifactId>
+		</dependency>
+
+		<!--
+			Authentication and authorization (Phase 4). Replaces the transitional X-User-Id header.
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-security</artifactId>
+		</dependency>
+		<!--
+			Provides the Nimbus-backed JwtEncoder/JwtDecoder used to issue and validate access tokens.
+			Using Spring Security's own JOSE support rather than hand-rolling JWT handling is deliberate:
+			signing, parsing and claim validation are the parts of token security that must not be
+			reimplemented. It also means swapping this service's own issuer for an external identity
+			provider later is a decoder configuration change, not a rewrite.
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+		</dependency>
+
 <!--		<dependency>-->
 <!--			<groupId>org.springframework.boot</groupId>-->
 <!--			<artifactId>spring-boot-docker-compose</artifactId>-->
@@ -110,6 +142,44 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-webmvc-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-security-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+		<!--
+			Required by TestRestTemplate, which the integration tests use to issue real HTTP requests
+			against a random port. Without it TestRestTemplateTestAutoConfiguration fails with
+			NoClassDefFoundError: org/springframework/boot/restclient/RestTemplateBuilder.
+			Test scope only - the application itself does not use RestTemplate.
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-restclient</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+		<!--
+			Testcontainers: lets the test suite run Flyway and the full Spring context against a
+			real, disposable PostgreSQL instance instead of the developer's local database.
+			Versions come from the Testcontainers BOM managed by spring-boot-dependencies.
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-testcontainers</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-postgresql</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-junit-jupiter</artifactId>
 			<scope>test</scope>
 		</dependency>
 <!--		<dependency>-->
