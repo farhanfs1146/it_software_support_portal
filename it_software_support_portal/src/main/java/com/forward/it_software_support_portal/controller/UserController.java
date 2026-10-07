@@ -5,8 +5,12 @@ import com.forward.it_software_support_portal.common.web.PageRequests;
 import com.forward.it_software_support_portal.common.web.UserPageRequests;
 import com.forward.it_software_support_portal.dto.request.ChangePasswordRequest;
 import com.forward.it_software_support_portal.dto.request.CreateUserRequest;
+import com.forward.it_software_support_portal.dto.request.ResetPasswordRequest;
+import com.forward.it_software_support_portal.dto.request.UpdateUserRoleRequest;
+import com.forward.it_software_support_portal.dto.request.UpdateUserStatusRequest;
 import com.forward.it_software_support_portal.dto.response.UserResponse;
 import com.forward.it_software_support_portal.service.UserService;
+import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -81,6 +85,50 @@ public class UserController {
      * {@code X-Page-Number}, {@code X-Page-Size}, {@code X-Has-Next}) - the same convention tickets have
      * used since Phase 3.
      */
+    @Operation(summary = "Reset another user's password",
+            description = "Administrative account recovery: sets a password without knowing the old "
+                    + "one, and ends every session that account holds. Requires USER_MANAGE.")
+    @PreAuthorize("hasAuthority('USER_MANAGE')")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @PostMapping("/{id}/password-reset")
+    public void resetPassword(@PathVariable Long id,
+                              @Valid @RequestBody ResetPasswordRequest request) {
+        userService.resetPassword(id, request);
+    }
+
+    @Operation(summary = "Activate or deactivate a user",
+            description = "Deactivating ends every session the account holds and takes effect on the "
+                    + "next request rather than when the access token expires. You cannot deactivate "
+                    + "yourself, and you cannot deactivate the last active administrator. "
+                    + "Requires USER_MANAGE.")
+    @PreAuthorize("hasAuthority('USER_MANAGE')")
+    @PatchMapping("/{id}/status")
+    public UserResponse updateStatus(@PathVariable Long id,
+                                     @Valid @RequestBody UpdateUserStatusRequest request) {
+        return userService.updateStatus(id, request);
+    }
+
+    @Operation(summary = "Change a user's role",
+            description = "Ends every session, because permissions travel in the access token and a "
+                    + "demotion must not wait for it to expire. You cannot change your own role, and "
+                    + "you cannot demote the last active administrator. Requires USER_MANAGE.")
+    @PreAuthorize("hasAuthority('USER_MANAGE')")
+    @PatchMapping("/{id}/role")
+    public UserResponse updateRole(@PathVariable Long id,
+                                   @Valid @RequestBody UpdateUserRoleRequest request) {
+        return userService.updateRole(id, request);
+    }
+
+    @Operation(summary = "End every session for a user",
+            description = "Force sign-out without changing the password or the role - the "
+                    + "proportionate response to a lost device. Requires USER_MANAGE.")
+    @PreAuthorize("hasAuthority('USER_MANAGE')")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @DeleteMapping("/{id}/sessions")
+    public void revokeSessions(@PathVariable Long id) {
+        userService.revokeSessions(id);
+    }
+
     @PreAuthorize("hasAuthority('USER_READ')")
     @GetMapping
     public ResponseEntity<List<UserResponse>> getAllUsers(

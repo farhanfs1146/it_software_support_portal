@@ -67,7 +67,7 @@ class InMemoryLoginAttemptLimiterTest {
     private InMemoryLoginAttemptLimiter limiter;
 
     private static SecurityProperties propertiesWith(SecurityProperties.RateLimit rateLimit) {
-        return new SecurityProperties(null, null, null, rateLimit, true);
+        return new SecurityProperties(null, null, null, null, rateLimit, true);
     }
 
     private static SecurityProperties.RateLimit limits(int account, int address, int maxKeys) {

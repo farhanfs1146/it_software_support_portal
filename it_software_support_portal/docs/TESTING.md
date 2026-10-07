@@ -193,12 +193,12 @@ permission model breaks a test instead of passing silently.
 | `regression` | Known **defects** and their Phase 2+ targets. See the convention below. |
 | `migration` | Migration discipline: the full chain applies to an empty database, and the schema matches. |
 | `performance` | Scaling invariants - statement counts and bounded responses - plus the deliberately-run benchmarks. |
-| `security` | Authentication, authorization and resource-level access control (Phase 4-5). |
+| `security` | Authentication, authorization, resource-level access control and session lifecycle (Phases 4, 5, 7). |
 | `unit` | No Spring, no Docker. Runs everywhere. |
 
 ### Security test structure
 
-`src/test/java/.../security/` holds three classes, split by the kind of question each answers.
+`src/test/java/.../security/` is split by the kind of question each class answers.
 
 | Class | Tests | Question |
 |---|---|---|
@@ -207,8 +207,13 @@ permission model breaks a test instead of passing silently.
 | `ResourceAccessControlTest` | 14 | *May you do this **to this row**?* Cross-user ticket and user access, the restricted list and its count, that a filter cannot widen a result set, assignee and raiser visibility, unassigned-ticket visibility, and that no password hash appears in any user response. |
 | `LoginRateLimitSecurityTest` | 16 | *Can you keep guessing?* Account and address throttling end to end, `Retry-After`, the 429 body, enumeration resistance, success clearing failure state, and bypass attempts — changing account, changing address, spoofed `X-Forwarded-For`, legacy `X-User-Id`, concurrency. Phase 5. |
 | `ratelimit/InMemoryLoginAttemptLimiterTest` | 17 | The throttle in isolation. **Runs without Docker**: an injected `Clock` makes window and block expiry deterministic instead of needing a 15-minute sleep. Also covers memory bounding and 64-thread concurrency. Phase 5. |
+| `SessionLifecycleSecurityTest` | 30 | *Can you stay signed in, and can you stop?* Login returns both tokens; only a hash is stored; rotation; spent, unknown and blank tokens; replay revokes the whole family while leaving other families alone; logout idempotent and not an oracle; logout-all refuses a live access token; `/api/auth/me` identity, permissions and session count; token responses not cacheable. Phase 7. |
+| `TokenRevocationSecurityTest` | 26 | *Does revoking actually revoke?* Deactivation, role change, own password change, administrative reset and forced sign-out each refuse an existing, validly-signed, unexpired access token on the **next** request. Plus every self-targeting and last-active-administrator guard, `USER_MANAGE` on each admin endpoint, and that a failed password change does not sign you out. Phase 7. |
 
-**70 security tests** (37 from Phase 4, 33 added in Phase 5). Three further categories live with the behaviour they protect rather than in this
+**126 security tests** (37 from Phase 4, 33 added in Phase 5, 56 added in Phase 7). A further 81 Phase 7
+tests live in `unit/` because they need no Docker: `RefreshTokenRotationTest` (30),
+`AccessTokenRevocationTest` (19 - validator verdicts and cache rules), `AccountAdministrationGuardsTest`
+(17) and `JwtKeyRotationTest` (15). Three further categories live with the behaviour they protect rather than in this
 package, because they are regressions of earlier phases:
 
 - **Identity spoofing** — `regression/TicketIdentityRegressionTest`: `X-User-Id` can neither override nor
@@ -322,6 +327,45 @@ Measurements, the index decision and the rejected candidate: **docs/PERFORMANCE.
 > `password_hash`. Mint tokens **before** opening a recording window, or the harness's own SQL lands in
 > the capture and the test fails for the wrong reason.
 
+### Fixed in Phase 7
+
+| ID | Defect | Covered by |
+|---|---|---|
+| — | No way to end a session: no logout, and changing a password left every existing session running | `SessionLifecycleSecurityTest`, `TokenRevocationSecurityTest` |
+| — | An access token could not be revoked, so a **deactivated user kept access for the rest of the token's lifetime** | `TokenRevocationSecurityTest`, `AccessTokenRevocationTest` |
+| — | No refresh flow, so staying signed in meant re-submitting the password every 30 minutes — which pushes clients towards caching the password | `SessionLifecycleSecurityTest`, `RefreshTokenRotationTest` |
+| — | One signing secret, so rotating it signed every user out at once — and therefore never happened | `JwtKeyRotationTest` |
+| — | No API way to deactivate, reset or re-role a user; disabling a leaver meant a manual `UPDATE` that did nothing to their live sessions | `TokenRevocationSecurityTest`, `AccountAdministrationGuardsTest` |
+| — | A client had to decode the access token to know its own permissions, reimplementing the role mapping | `SessionLifecycleSecurityTest` (`/api/auth/me`) |
+
+Design and reasoning: **docs/SECURITY.md** §5b, §6.5, §6.6. Migration: **V15**. Phase outcome:
+**docs/PHASE7_SESSION_LIFECYCLE_REPORT.md**.
+
+> **A bug the tests found, not the review.** The first version of reuse detection revoked the token
+> family and *then* threw the 401. The throw rolled the transaction back, and with it the revocation —
+> a replayed token produced a 401 and left the thief's successor perfectly valid. The code reads
+> correctly, which is why reading it did not catch it; `SessionLifecycleSecurityTest.replayRevokesTheWholeFamily`
+> failed on its first run against a real database. The fix is `RefreshTokenFamilyRevoker`
+> (`REQUIRES_NEW`, in its own bean so the proxy applies). This is the clearest argument in the suite
+> for integration tests that commit: a mocked repository would have recorded the call and passed.
+
+> **Two more harness notes.**
+>
+> `AbstractIntegrationTest` clears the revocation state cache in a `@BeforeEach`. **That is required,
+> not hygiene:** every test truncates `users` and inserts fresh rows, so ids are reused while the cache
+> is keyed on id. Without it, a test that deactivated user 1 would leave "user 1 is inactive" cached and
+> the next test's brand-new user 1 would be refused.
+>
+> Use `login(email, password)` rather than `tokenFor(id)` whenever the test is about the session itself.
+> `tokenFor` mints an access token directly and deliberately creates **no** `refresh_tokens` row, so
+> refresh, logout and rotation have nothing to act on.
+
+> **Expiry and TTL rules are tested with an injected `Clock`,** as the login limiter's already were.
+> A refresh token lives seven days and the state cache fifteen seconds; proving either against the wall
+> clock would mean sleeping, which makes the suite slow and flaky — so the rule ends up either untested
+> or merely trusted. Moving the clock proves the boundary exactly, including that expiry is exclusive.
+> This is also why four of the six Phase 7 test classes need no Docker.
+
 ### Still outstanding
 
 | ID | Defect | Covered by | Target phase |
@@ -329,6 +373,9 @@ Measurements, the index decision and the rejected candidate: **docs/PERFORMANCE.
 | P1-5 | Any status transition is accepted, including CLOSED to OPEN | `TicketStatusWorkflowRegressionTest` | blocked: needs a workflow decision |
 | P2-2 | `ticket_history` (V6) is an orphan table | `FlywayMigrationTest` | later |
 | — | Login throttle is in-process, so not cluster-wide; and no general API request-rate limiting | `InMemoryLoginAttemptLimiterTest` | security follow-up; see docs/SECURITY.md §5a |
+| — | Access-token revocation is immediate on the instance that performs it, but bounded by the state-cache TTL elsewhere | `AccessTokenRevocationTest` | configuration today (`state-cache-ttl=0`); a shared-store `PrincipalStateRegistry` later. docs/SECURITY.md §6.5 |
+| — | An administrative password reset does not force a change on next sign-in, and there is no email-based self-service reset | — | security follow-up; docs/SECURITY.md §6.7 |
+| — | **Test bug, pre-existing:** `TicketHistoryEndpointTest.readingTheTrailDoesNotScaleWithItsLength` asserts 2 statements but only 1 is issued - Spring Data skips the count query for a short first page. Verified failing identically on pristine `2cd288e`; invisible here because no container runtime is installed, so the test is normally skipped. The property it guards (flat statement count via the projection) does still hold | - | a focused fix; the assertion is wrong, not the product |
 
 P1-6 (`resolvedAt` never cleared on reopen) is **fixed** — `TicketServiceImpl.applyResolutionTimestamp`
 clears the timestamp whenever a ticket returns to open work and preserves it on `CLOSED`. It was
@@ -368,7 +415,7 @@ Hibernate's own `Statistics`.
 | Test | Guards |
 |---|---|
 | `performance/TicketListBaselineTest` | `GET /api/tickets`: a page costs the same at 50 and 500 rows and at any reference cardinality; the response is bounded; payload stays flat from 100 to 2,000 tickets |
-| `performance/UserListBaselineTest` | `GET /api/users` and `GET /api/applications`: a page costs the same at 50 and 500 rows; the user listing SQL never mentions `password_hash`, while login still reads it |
+| `performance/UserListBaselineTest` | `GET /api/users` and `GET /api/applications`: a page costs the same at 50 and 500 rows; no statement touching `users` ever mentions `password_hash`, while login still reads it; and the Phase 7 revocation check reads two columns on the first request per user and **nothing at all** on the next - the property that keeps revocation off the hot path |
 
 What those numbers replaced, as measured by the audit before Phase 3 (local PostgreSQL 18):
 

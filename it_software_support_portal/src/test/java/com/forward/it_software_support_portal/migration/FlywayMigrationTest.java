@@ -53,7 +53,8 @@ class FlywayMigrationTest extends AbstractIntegrationTest {
                 "V11__add_foreign_keys.sql",
                 "V12__add_ticket_list_indexes.sql",
                 "V13__add_user_credentials.sql",
-                "V14__add_user_list_index.sql");
+                "V14__add_user_list_index.sql",
+                "V15__create_refresh_tokens_and_token_version.sql");
     }
 
     @Test
@@ -67,7 +68,7 @@ class FlywayMigrationTest extends AbstractIntegrationTest {
 
         assertThat(tables).contains(
                 "applications", "ticket_attachments", "ticket_comments",
-                "ticket_history", "ticket_history_tracking", "tickets", "users");
+                "refresh_tokens", "ticket_history", "ticket_history_tracking", "tickets", "users");
     }
 
     @Test
@@ -133,14 +134,25 @@ class FlywayMigrationTest extends AbstractIntegrationTest {
                         "fk_ticket_history_tracking_changed_by",
                         "fk_ticket_comments_ticket",
                         "fk_ticket_comments_commented_by",
-                        "fk_ticket_attachments_ticket");
+                        "fk_ticket_attachments_ticket",
+                        // V15. The one cascade in the schema - see below.
+                        "fk_refresh_tokens_user");
 
-        // 'r' = RESTRICT. No constraint may cascade: deleting a user or ticket must never silently
-        // erase tickets or audit history.
-        assertThat(fks).allSatisfy(row ->
-                assertThat(row.get("on_delete"))
+        // 'r' = RESTRICT. No BUSINESS constraint may cascade: deleting a user or ticket must never
+        // silently erase tickets or audit history.
+        assertThat(fks).filteredOn(row -> !"fk_refresh_tokens_user".equals(row.get("name")))
+                .allSatisfy(row -> assertThat(row.get("on_delete"))
                         .as("constraint %s must be ON DELETE RESTRICT, never CASCADE", row.get("name"))
                         .isEqualTo("r"));
+
+        // 'c' = CASCADE, and refresh_tokens is the deliberate exception. Session credentials are
+        // derived authentication state, not business history: a deleted user's live sessions must not
+        // outlive the account, and RESTRICT would make deleting a user impossible while any token row
+        // remained. Asserted explicitly so the exception stays a decision rather than a drift.
+        assertThat(fks)
+                .filteredOn(row -> "fk_refresh_tokens_user".equals(row.get("name")))
+                .singleElement()
+                .satisfies(row -> assertThat(row.get("on_delete")).isEqualTo("c"));
     }
 
     @Test

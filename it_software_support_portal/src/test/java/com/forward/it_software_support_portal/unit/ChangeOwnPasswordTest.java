@@ -42,7 +42,8 @@ class ChangeOwnPasswordTest {
     private final CurrentUserProvider currentUserProvider = mock(CurrentUserProvider.class);
 
     private final UserServiceImpl userService =
-            new UserServiceImpl(userRepository, passwordEncoder, currentUserProvider);
+            new UserServiceImpl(userRepository, passwordEncoder, currentUserProvider,
+                    mock(com.forward.it_software_support_portal.security.session.RefreshTokenService.class));
 
     private User caller(String storedPassword) {
         User user = new User();

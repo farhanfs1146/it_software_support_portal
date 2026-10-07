@@ -42,7 +42,7 @@ public class JwtRoleAuthoritiesConverter implements Converter<Jwt, AbstractAuthe
     }
 
     private List<GrantedAuthority> authorities(Jwt jwt) {
-        String roleClaim = jwt.getClaimAsString(JwtTokenService.CLAIM_ROLE);
+        String roleClaim = jwt.getClaimAsString(JwtClaims.ROLE);
         if (roleClaim == null || roleClaim.isBlank()) {
             log.warn("Token for subject {} carries no role claim; granting no authorities", jwt.getSubject());
             return List.of();

@@ -9,6 +9,7 @@ import java.util.List;
  * Externalised security configuration. Nothing here has a hardcoded secret.
  *
  * @param jwt            access-token settings
+ * @param session        session lifecycle: refresh-token lifetime and revocation latency
  * @param cors           browser origins permitted to call the API
  * @param bootstrapAdmin optional first administrator, so a fresh deployment is usable
  * @param rateLimit      login abuse protection
@@ -17,6 +18,7 @@ import java.util.List;
 @ConfigurationProperties(prefix = "app.security")
 public record SecurityProperties(
         Jwt jwt,
+        Session session,
         Cors cors,
         BootstrapAdmin bootstrapAdmin,
         RateLimit rateLimit,
@@ -24,7 +26,8 @@ public record SecurityProperties(
 ) {
 
     public SecurityProperties {
-        jwt = jwt == null ? new Jwt(null, null, null) : jwt;
+        jwt = jwt == null ? new Jwt(null, null, null, null, null) : jwt;
+        session = session == null ? new Session(null, null, null, 0, -1, null) : session;
         cors = cors == null ? new Cors(null, false) : cors;
         bootstrapAdmin = bootstrapAdmin == null ? new BootstrapAdmin(null, null, null) : bootstrapAdmin;
         rateLimit = rateLimit == null
@@ -33,23 +36,105 @@ public record SecurityProperties(
     }
 
     /**
-     * @param secret   HMAC signing key, at least 32 bytes. Supply it through the environment. When
-     *                 blank a random key is generated at startup with a loud warning - secure, but
-     *                 tokens do not survive a restart and will not validate across instances.
-     * @param issuer   the {@code iss} claim this service puts in tokens and requires when validating
-     * @param ttl      how long an access token stays valid
+     * @param secret       HMAC signing key, at least 32 bytes. Supply it through the environment. When
+     *                     blank a random key is generated at startup with a loud warning - secure, but
+     *                     tokens do not survive a restart and will not validate across instances.
+     * @param keyId        the {@code kid} header written into newly issued tokens
+     * @param previousKeys secrets retained only to verify tokens signed before the last rotation, so
+     *                     that changing the signing secret does not sign every user out. See
+     *                     {@link JwtKeys} for the rotation procedure, including the retirement step
+     *                     that makes it a rotation rather than an accumulation.
+     * @param issuer       the {@code iss} claim this service puts in tokens and requires when validating
+     * @param ttl          how long an access token stays valid
      */
-    public record Jwt(String secret, String issuer, Duration ttl) {
+    public record Jwt(
+            String secret,
+            String keyId,
+            List<JwtKey> previousKeys,
+            String issuer,
+            Duration ttl
+    ) {
 
         public static final int MINIMUM_SECRET_BYTES = 32;
 
         public Jwt {
             issuer = issuer == null || issuer.isBlank() ? "it-software-support-portal" : issuer;
             ttl = ttl == null ? Duration.ofMinutes(30) : ttl;
+            previousKeys = previousKeys == null ? List.of() : List.copyOf(previousKeys);
         }
 
         public boolean hasSecret() {
             return secret != null && !secret.isBlank();
+        }
+
+        /**
+         * The {@code kid} written into newly issued tokens. A default is supplied rather than left
+         * absent so that even an unconfigured deployment issues tokens whose key is resolvable by id;
+         * otherwise introducing a second key later would orphan every token already in circulation.
+         */
+        public String keyIdOrDefault() {
+            return keyId == null || keyId.isBlank() ? JwtKeys.DEFAULT_KEY_ID : keyId;
+        }
+
+        public List<JwtKey> previousKeysOrEmpty() {
+            return previousKeys;
+        }
+    }
+
+    /**
+     * One retired signing key, kept so tokens issued before a rotation keep working until they expire.
+     *
+     * @param keyId  must match the {@code kid} those tokens were signed with
+     * @param secret the retired secret; still length-checked, because it can still verify a signature
+     */
+    public record JwtKey(String keyId, String secret) {
+
+        public boolean isUsable() {
+            return keyId != null && !keyId.isBlank() && secret != null && !secret.isBlank();
+        }
+    }
+
+    /**
+     * Session lifecycle (Phase 7): how long a refresh token lives, and how quickly a revocation takes
+     * effect.
+     *
+     * @param refreshTtl          how long a refresh token remains exchangeable. Long enough that a user
+     *                            is not asked for their password daily, short enough that an abandoned
+     *                            session dies on its own. Default 7 days.
+     * @param stateCacheTtl       how long the per-request revocation check may serve cached account
+     *                            state. <strong>Zero disables caching</strong> and reads through on
+     *                            every authenticated request, which is the correct setting behind a load
+     *                            balancer - see {@code session/CachingPrincipalStateRegistry}. Default
+     *                            15s, which bounds only revocations this instance did not perform
+     *                            itself; a local revocation is immediate at any TTL.
+     * @param expiredRetention    how long an expired token row is kept before the purge deletes it.
+     *                            Retention exists so a detected replay stays investigable after the
+     *                            tokens involved have expired. Default 7 days.
+     * @param stateCacheMaxEntries cap on cached accounts, bounding memory. Default 10,000.
+     * @param maxSessionsPerUser  cap on simultaneous live refresh tokens per user; the oldest are
+     *                            revoked once the cap is passed. Bounds how many devices one leaked
+     *                            password can accumulate, and bounds the table. Default 10; 0 means no
+     *                            cap.
+     * @param purgeCron           when expired token rows are deleted. Default 03:15 daily.
+     */
+    public record Session(
+            Duration refreshTtl,
+            Duration stateCacheTtl,
+            Duration expiredRetention,
+            int stateCacheMaxEntries,
+            int maxSessionsPerUser,
+            String purgeCron
+    ) {
+
+        public Session {
+            refreshTtl = refreshTtl == null ? Duration.ofDays(7) : refreshTtl;
+            // Zero is a meaningful value here (read through every time), so only null falls back.
+            stateCacheTtl = stateCacheTtl == null ? Duration.ofSeconds(15) : stateCacheTtl;
+            expiredRetention = expiredRetention == null ? Duration.ofDays(7) : expiredRetention;
+            stateCacheMaxEntries = stateCacheMaxEntries <= 0 ? 10_000 : stateCacheMaxEntries;
+            // Zero is meaningful (no cap), so only a negative - which Spring never binds - falls back.
+            maxSessionsPerUser = maxSessionsPerUser < 0 ? 10 : maxSessionsPerUser;
+            purgeCron = purgeCron == null || purgeCron.isBlank() ? "0 15 3 * * *" : purgeCron;
         }
     }
 

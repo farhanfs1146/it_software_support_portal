@@ -74,13 +74,15 @@ class AuthServiceDummyHashTest {
     private final UserRepository userRepository = mock(UserRepository.class);
 
     private AuthServiceImpl authService() {
-        SecurityProperties properties = new SecurityProperties(null, null, null, null, false);
+        SecurityProperties properties = new SecurityProperties(null, null, null, null, null, false);
         return new AuthServiceImpl(
                 userRepository,
                 encoder,
                 mock(JwtTokenService.class),
+                mock(com.forward.it_software_support_portal.security.session.RefreshTokenService.class),
                 mock(LoginAttemptLimiter.class),
                 new ClientIpResolver(properties),
+                mock(com.forward.it_software_support_portal.common.identity.CurrentUserProvider.class),
                 mock(HttpServletRequest.class));
     }
 

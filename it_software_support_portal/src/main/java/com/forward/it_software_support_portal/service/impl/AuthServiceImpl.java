@@ -1,40 +1,48 @@
 package com.forward.it_software_support_portal.service.impl;
 
+import com.forward.it_software_support_portal.common.exception.ResourceNotFoundException;
+import com.forward.it_software_support_portal.common.identity.CurrentUserProvider;
 import com.forward.it_software_support_portal.dto.request.LoginRequest;
+import com.forward.it_software_support_portal.dto.request.RefreshTokenRequest;
+import com.forward.it_software_support_portal.dto.response.CurrentUserResponse;
 import com.forward.it_software_support_portal.dto.response.LoginResponse;
 import com.forward.it_software_support_portal.entity.User;
 import com.forward.it_software_support_portal.repository.UserRepository;
 import com.forward.it_software_support_portal.security.InvalidCredentialsException;
 import com.forward.it_software_support_portal.security.JwtTokenService;
+import com.forward.it_software_support_portal.security.Permission;
+import com.forward.it_software_support_portal.security.RolePermissions;
 import com.forward.it_software_support_portal.security.ratelimit.ClientIpResolver;
 import com.forward.it_software_support_portal.security.ratelimit.LoginAttemptLimiter;
 import com.forward.it_software_support_portal.security.ratelimit.TooManyLoginAttemptsException;
+import com.forward.it_software_support_portal.security.session.RefreshTokenService;
+import com.forward.it_software_support_portal.security.session.RevocationReason;
 import com.forward.it_software_support_portal.service.AuthService;
+import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Comparator;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Email/password authentication against the {@code users} table.
+ * Authentication and session lifecycle.
  *
- * <p>Three properties worth noting:
+ * <h2>Uniform failures (Phase 4, preserved)</h2>
  *
- * <ul>
- *   <li><strong>Uniform failure.</strong> Unknown email, wrong password, no password set and
- *       deactivated account all produce the same {@link InvalidCredentialsException}. The specific
- *       cause is logged, never returned.
- *   <li><strong>No timing shortcut.</strong> When no user or no hash is found the encoder still runs
- *       against a dummy hash, so a request for a nonexistent account costs roughly the same as one for
- *       a real account. Returning early would let an attacker enumerate accounts by response time.
- *   <li><strong>The password never leaves this method.</strong> It is not logged, not stored, and not
- *       echoed in any response.
- * </ul>
+ * Unknown account, wrong password, no password set and deactivated account all produce a
+ * byte-identical 401. Any difference between them - a different message, a different status, even a
+ * measurably different response time - is an oracle telling an attacker which addresses are real
+ * accounts. That is why a dummy BCrypt verification runs even when no user was found: skipping it would
+ * make "no such account" measurably faster than "wrong password".
+ *
+ * <p>Phase 7 extends the same rule to refresh: unknown token, spent token, revoked token, expired token
+ * and deactivated account are one exception and one response.
  */
 @Service
 public class AuthServiceImpl implements AuthService {
@@ -44,51 +52,50 @@ public class AuthServiceImpl implements AuthService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenService jwtTokenService;
+    private final RefreshTokenService refreshTokenService;
     private final LoginAttemptLimiter loginAttemptLimiter;
     private final ClientIpResolver clientIpResolver;
-    /** Request-scoped proxy; used only to read the peer address for throttling. */
+    private final CurrentUserProvider currentUserProvider;
     private final HttpServletRequest httpServletRequest;
 
     /**
-     * A hash of a random value nobody knows, verified against when the account does not exist so that
-     * the request still costs a full password verification. Comparing any input against it fails.
-     *
-     * <p><strong>Produced by the injected encoder rather than written as a literal, deliberately.</strong>
-     * The previous constant was a hand-written string that was one character too long to be a valid
-     * BCrypt hash. {@code BCryptPasswordEncoder.matches} rejects a malformed hash on a regex before it
-     * does any hashing, so it returned false immediately: the timing equalisation this field exists for
-     * was not happening at all, and every login for an unknown email logged a warning. Deriving the
-     * value from the encoder removes both the possibility of a malformed literal and a second, quieter
-     * failure mode - a literal pinned at cost factor 10 stops matching the real verification cost the
-     * moment the encoder's strength is raised.
-     *
-     * <p>Costs one BCrypt computation at startup, which is the point: it is the same computation a real
-     * verification performs.
+     * A throwaway hash verified when no account matched, so that the expensive BCrypt comparison
+     * happens on every login attempt and "no such user" cannot be told from "wrong password" by timing.
      */
     private final String dummyHash;
 
     public AuthServiceImpl(UserRepository userRepository,
                            PasswordEncoder passwordEncoder,
                            JwtTokenService jwtTokenService,
+                           RefreshTokenService refreshTokenService,
                            LoginAttemptLimiter loginAttemptLimiter,
                            ClientIpResolver clientIpResolver,
+                           CurrentUserProvider currentUserProvider,
                            HttpServletRequest httpServletRequest) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtTokenService = jwtTokenService;
+        this.refreshTokenService = refreshTokenService;
         this.loginAttemptLimiter = loginAttemptLimiter;
         this.clientIpResolver = clientIpResolver;
+        this.currentUserProvider = currentUserProvider;
         this.httpServletRequest = httpServletRequest;
         this.dummyHash = passwordEncoder.encode(UUID.randomUUID().toString());
     }
 
+    /**
+     * Writable rather than read-only since Phase 7: a successful login now also writes a refresh-token
+     * row, so the token and the session it belongs to are created in one transaction. A login that
+     * returned a refresh token which failed to persist would hand the client a credential the server
+     * does not recognise.
+     */
     @Override
-    @Transactional(readOnly = true)
+    @Transactional
     public LoginResponse login(LoginRequest request) {
         String clientIp = clientIpResolver.resolve(httpServletRequest);
 
-        // Checked before the account is even looked up, so a refusal costs no query and no BCrypt work,
-        // and cannot depend on whether the account exists.
+        // Before the user lookup and before BCrypt on purpose: a throttled attempt must cost the
+        // attacker a round trip and cost this server nothing.
         guard(() -> loginAttemptLimiter.checkAllowed(request.getEmail(), clientIp),
                 TooManyLoginAttemptsException.class);
 
@@ -103,17 +110,73 @@ public class AuthServiceImpl implements AuthService {
     }
 
     /**
-     * Runs a limiter operation without letting a fault in it break authentication.
+     * <strong>Not rate-limited, and that is reasoned rather than overlooked.</strong> Login throttling
+     * exists because a password is low-entropy and guessable. A refresh token is 256 bits from a
+     * CSPRNG: there is nothing to guess, so a limiter would add state and a lockout vector in exchange
+     * for no protection. What protects this endpoint is rotation plus reuse detection - a token works
+     * once, and a second use kills the session.
+     */
+    @Override
+    @Transactional
+    public LoginResponse refresh(RefreshTokenRequest request) {
+        RefreshTokenService.RotatedSession rotated =
+                refreshTokenService.rotate(request.getRefreshToken());
+        return tokenResponse(rotated.user(), rotated.refreshToken());
+    }
+
+    @Override
+    @Transactional
+    public void logout(RefreshTokenRequest request) {
+        refreshTokenService.logout(request.getRefreshToken());
+    }
+
+    @Override
+    @Transactional
+    public void logoutAll() {
+        User user = requireCurrentUser();
+        int revoked = refreshTokenService.revokeAllSessions(user, RevocationReason.LOGOUT_ALL);
+        log.info("User {} signed out everywhere: {} session(s) ended and outstanding access tokens "
+                + "invalidated", user.getId(), revoked);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public CurrentUserResponse currentUser() {
+        User user = requireCurrentUser();
+        return CurrentUserResponse.builder()
+                .id(user.getId())
+                .employeeCode(user.getEmployeeCode())
+                .fullName(user.getFullName())
+                .email(user.getEmail())
+                .departmentId(user.getDepartmentId())
+                .designationId(user.getDesignationId())
+                .role(user.getRole().name())
+                .permissions(permissionNames(user))
+                .sessionCount(refreshTokenService.liveSessionCount(user.getId()))
+                .build();
+    }
+
+    /** Sorted so the response is stable between calls and simple to assert on. */
+    private static List<String> permissionNames(User user) {
+        return RolePermissions.of(user.getRole()).stream()
+                .map(Permission::name)
+                .sorted(Comparator.naturalOrder())
+                .toList();
+    }
+
+    private User requireCurrentUser() {
+        Long userId = currentUserProvider.requireCurrentUserId();
+        return userRepository.findById(userId)
+                .orElseThrow(() -> ResourceNotFoundException.of("User", userId));
+    }
+
+    /**
+     * Runs a limiter operation without letting it break authentication.
      *
-     * <p><strong>Fail-safe policy.</strong> Throttling is protective, not authoritative: it decides
-     * whether to <em>refuse</em> an attempt, never whether to <em>accept</em> one. So an unexpected fault
-     * inside the limiter is logged at ERROR and swallowed, and the request proceeds to normal password
-     * verification. The consequence is degraded brute-force protection, loudly reported — not an
-     * authentication bypass, because the password is still verified, and not a 500 for an ordinary login,
-     * because a tracking bug must not take authentication offline.
-     *
-     * <p>{@code TooManyLoginAttemptsException} is the limiter working correctly, so it is rethrown rather
-     * than swallowed - hence the {@code expected} parameter.
+     * <p>A fault inside the limiter is logged at ERROR and swallowed, and the request continues to
+     * normal password verification. That is not an authentication bypass - the password is still
+     * checked - but it is degraded brute-force protection, so it is reported loudly rather than
+     * turning an ordinary login into a 500.
      */
     private void guard(Runnable limiterOperation, Class<? extends RuntimeException> expected) {
         try {
@@ -135,6 +198,7 @@ public class AuthServiceImpl implements AuthService {
                 .filter(hash -> hash != null && !hash.isBlank())
                 .orElse(dummyHash);
 
+        // Always compared, even when there is no account, so every path costs one BCrypt verification.
         boolean passwordMatches = passwordEncoder.matches(request.getPassword(), storedHash);
 
         if (candidate.isEmpty()) {
@@ -156,13 +220,20 @@ public class AuthServiceImpl implements AuthService {
             throw invalidCredentials();
         }
 
-        JwtTokenService.IssuedToken token = jwtTokenService.issue(user);
-        log.info("Issued access token for user {} with role {}", user.getId(), user.getRole());
+        RefreshTokenService.IssuedRefreshToken refreshToken = refreshTokenService.issueFor(user);
+        log.info("Issued an access token and started a session for user {} with role {}",
+                user.getId(), user.getRole());
+        return tokenResponse(user, refreshToken);
+    }
 
+    private LoginResponse tokenResponse(User user, RefreshTokenService.IssuedRefreshToken refreshToken) {
+        JwtTokenService.IssuedToken accessToken = jwtTokenService.issue(user);
         return LoginResponse.builder()
-                .accessToken(token.token())
+                .accessToken(accessToken.token())
                 .tokenType("Bearer")
-                .expiresIn(token.expiresIn())
+                .expiresIn(accessToken.expiresIn())
+                .refreshToken(refreshToken.rawToken())
+                .refreshExpiresIn(refreshToken.expiresInSeconds())
                 .userId(user.getId())
                 .fullName(user.getFullName())
                 .role(user.getRole().name())

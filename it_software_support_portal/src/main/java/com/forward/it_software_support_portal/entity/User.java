@@ -46,4 +46,19 @@ public class User {
      */
     @Column(name = "password_hash", length = 255)
     private String passwordHash;
+
+    /**
+     * Revocation counter. Every access token issued for this user carries the value current at the time
+     * of issue in its {@code tv} claim, and the resource server rejects any token whose claim does not
+     * match this field.
+     *
+     * <p>Incrementing it therefore ends every outstanding session for this user immediately - which is
+     * what a password change, a deactivation, a role change and "sign out everywhere" each do. Before
+     * Phase 7 there was no way to do this at all: a token stayed valid for its full lifetime no matter
+     * what happened to the account behind it.
+     *
+     * <p>Initialised to 0 so a newly constructed user matches the V15 column default.
+     */
+    @Column(name = "token_version", nullable = false)
+    private Integer tokenVersion = 0;
 }

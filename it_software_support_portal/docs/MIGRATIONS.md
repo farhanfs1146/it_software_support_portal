@@ -167,6 +167,7 @@ The second assertion is the one that would have caught this on 2026-09-29.
 | V12 | `add_ticket_list_indexes` | 4 measured ticket-list indexes (audit P1-3); rationale in docs/PERFORMANCE.md |
 | V13 | `add_user_credentials` | Nullable `users.password_hash` for authentication (audit P0-4); see below |
 | V14 | `add_user_list_index` | One measured index for the paged user directory (audit P2-1); see below |
+| V15 | `create_refresh_tokens_and_token_version` | `refresh_tokens` table plus `users.token_version`, for session lifecycle and access-token revocation; see below |
 
 ## V13 — user credentials
 
@@ -266,6 +267,71 @@ migration. It takes a brief `ACCESS EXCLUSIVE` lock on `users`; against a large 
 | Index present, rejected one absent | Asserted by `FlywayMigrationTest.userListIndexExists` |
 | No duplicate index on unique columns | Asserted by `FlywayMigrationTest.userUniqueColumnsAreNotDuplicated` |
 | Existing database | Additive; no data migration or backfill |
+
+## V15 - refresh tokens and the revocation counter
+
+**Why.** Phases 4 and 5 both recorded the same two open limitations: there was no refresh flow, so a
+client had to re-submit the password every 30 minutes; and an access token could not be revoked, so
+deactivating a user or changing a password left every already-issued token valid until it expired. Both
+fixes need persistent state, which is what this migration adds.
+
+**`users.token_version INTEGER NOT NULL DEFAULT 0`.** A monotonic counter. Every access token carries
+the value current at issue time in a `tv` claim; a mismatch is refused. Incrementing it therefore ends
+every outstanding token for that user at once, with no per-token denylist to grow without bound.
+
+A counter rather than a `revoked_before` timestamp deliberately: a counter needs no clock agreement
+between the issuer and the verifier, and cannot be defeated by skew or by two revocations landing in the
+same clock tick.
+
+`NOT NULL DEFAULT 0` so every existing row is valid immediately and no backfill is needed.
+
+**`refresh_tokens`.** One row per refresh-token credential.
+
+| Column | Note |
+|---|---|
+| `token_hash VARCHAR(64) NOT NULL UNIQUE` | Hex SHA-256 of the token handed to the client. The plaintext is never stored. SHA-256 rather than BCrypt because the token is 256 bits of CSPRNG output, not a human-chosen password - and because BCrypt salts, so a lookup would have to verify against every row. The unique index is the refresh hot path |
+| `user_id BIGINT NOT NULL` | FK to `users`, **`ON DELETE CASCADE`** - see below |
+| `family_id VARCHAR(36) NOT NULL` | Groups one rotation chain, so a replayed token revokes every descendant. A string rather than `UUID`, to keep the Hibernate mapping within types `ddl-auto=validate` already checks elsewhere in this schema |
+| `issued_at`, `expires_at`, `revoked_at` | `TIMESTAMP`, written in UTC |
+| `revoked_reason VARCHAR(40)` | Which `RevocationReason` ended it, so a detected replay is distinguishable from a routine rotation in an investigation |
+
+**The one `CASCADE` in the schema, and why it is not a contradiction of V11.** V11 chose `RESTRICT`
+everywhere, on the grounds that deleting a user must not silently erase their tickets or their audit
+trail. The opposite is true here: session credentials are derived authentication state, not business
+history, and a deleted user's live sessions must not outlive the account. `RESTRICT` would also make
+deleting a user impossible while any token row remained. `FlywayMigrationTest.foreignKeysExist` asserts
+this one constraint cascades and that every other still restricts, so the exception stays a decision
+rather than a drift.
+
+**Indexes.** Three, each for a statement that exists:
+
+- the `UNIQUE` constraint on `token_hash` serves the refresh lookup; no second index is added for it
+- `idx_refresh_tokens_user_live` - partial, `WHERE revoked_at IS NULL` - serves "revoke every live
+  session for this user" and the session count on `GET /api/auth/me`. Partial so it does not grow with
+  historical, already-revoked rows
+- `idx_refresh_tokens_family` - serves family-wide revocation
+- `idx_refresh_tokens_expires_at` - serves the scheduled purge
+
+**`TIMESTAMP`, not `TIMESTAMPTZ`.** This matches every other timestamp column in the schema
+(`tickets.created_at`, `ticket_history_tracking.changed_at`), and the application writes all of them in
+UTC through an injected `Clock` fixed to UTC. A zone-less column is unambiguous only if everything
+writing to it agrees on one; introducing a second timestamp convention for a single table would be a
+worse trade than keeping the one the whole schema shares.
+
+**Migration ordering.** Purely additive. The new column depends only on `users` existing (V1), and the
+new table on the same. Nothing earlier is touched. `ALTER TABLE ... ADD COLUMN` with a non-volatile
+default does not rewrite the table on PostgreSQL 11+, so it is fast even on a large `users` table.
+
+**Verification.**
+
+| Check | Result |
+|---|---|
+| Fresh database | V1-V15 apply in order; Flyway validates |
+| Script list matches disk | Asserted by `FlywayMigrationTest.schemaHistoryMatchesMigrationsOnDisk` |
+| `refresh_tokens` exists | Asserted by `FlywayMigrationTest.expectedTablesExist` |
+| FK present, cascade is the only one | Asserted by `FlywayMigrationTest.foreignKeysExist` |
+| Entity matches schema | `ddl-auto=validate` passes at startup in every integration test |
+| Existing database | Additive; no data migration or backfill. Tokens issued before V15 carry no `tv` claim and are refused, costing one re-login |
 
 ### Known schema debt
 

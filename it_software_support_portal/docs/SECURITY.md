@@ -32,6 +32,8 @@ is reversible cheaply, by design; see §1.4.
 |---|---|
 | Filter chain, CORS, crypto beans | `security/SecurityConfig` |
 | Token issuing | `security/JwtTokenService` |
+| Claim names, shared by issuer and verifiers | `security/JwtClaims` |
+| Signing-key set and rotation | `security/JwtKeys` |
 | Token to authorities | `security/JwtRoleAuthoritiesConverter` |
 | Current user resolution | `security/AuthenticatedCurrentUserProvider` |
 | Login use case | `service/impl/AuthServiceImpl` |
@@ -42,6 +44,14 @@ is reversible cheaply, by design; see §1.4.
 | Externalised settings | `security/SecurityProperties` |
 | First-administrator creation | `security/BootstrapAdminInitializer` |
 | Uniform credential failure | `security/InvalidCredentialsException` |
+| **Refresh-token lifecycle** | `security/session/RefreshTokenService` + `PersistentRefreshTokenService` |
+| Opaque token generation / hashing | `security/session/RefreshTokenGenerator`, `RefreshTokenHasher` |
+| Durable family revocation on replay | `security/session/RefreshTokenFamilyRevoker` |
+| **Access-token revocation check** | `security/session/AccessTokenRevocationValidator` |
+| Account state for that check, cached | `security/session/PrincipalStateRegistry` + `CachingPrincipalStateRegistry` |
+| Expired-token housekeeping | `security/session/ExpiredRefreshTokenPurge` |
+| Clock and scheduler for the above | `security/session/SessionTimeConfig` |
+| Uniform refresh failure | `security/session/InvalidRefreshTokenException` |
 
 ### 1.2 Login flow
 
@@ -51,12 +61,20 @@ POST /api/auth/login   { "email": "...", "password": "..." }
       → UserRepository.findByEmail
       → PasswordEncoder.matches(raw, storedHash)        BCrypt
       → checks: hash present, password matches, account active
+      → RefreshTokenService.issueFor(user)              opaque token, hash stored (Phase 7)
       → JwtTokenService.issue(user)                     Nimbus JwtEncoder
-  ← 200  { accessToken, tokenType: "Bearer", expiresIn, userId, fullName, role }
+  ← 200  { accessToken, tokenType: "Bearer", expiresIn,
+           refreshToken, refreshExpiresIn, userId, fullName, role }
   ← 401  for every credential failure, with one identical body
+  ← 429  when login attempts are throttled (§5a)
 ```
 
-The client then sends `Authorization: Bearer <accessToken>` on every other request.
+The client then sends `Authorization: Bearer <accessToken>` on every other request, and exchanges the
+refresh token at `POST /api/auth/refresh` when the access token expires (§5b).
+
+`login` is a **writing** transaction since Phase 7, because it now also creates the session row: a
+login that returned a refresh token which failed to persist would hand the client a credential the
+server does not recognise.
 
 ### 1.3 Why stateless JWT rather than server-side sessions
 
@@ -66,8 +84,11 @@ The client then sends `Authorization: Bearer <accessToken>` on every other reque
 - No ambient browser credential means no CSRF attack surface — see §8.
 - It is the same token format an external IdP would issue, which keeps §1.4 cheap.
 
-The cost of this choice is real and is recorded in §6.4: a stateless token cannot be revoked before it
-expires.
+The cost of this choice was real and is now **paid rather than accepted**. A purely stateless token
+cannot be revoked before it expires, which was recorded as a known limitation through Phases 4 and 5.
+Phase 7 buys revocation back with a counter and a short-TTL cache — see §6.5 — so the design is no
+longer "stateless, therefore unrevocable". It is stateless on the hot path, with exactly enough state
+consulted to answer "has this session ended?", and the trade is measured rather than assumed.
 
 ### 1.4 Path to an external identity provider
 
@@ -115,13 +136,20 @@ collected:
 3. **There is exactly one place** where identity is established, so "can a client influence who it
    claims to be?" has one answer to audit rather than one per controller.
 
-### No per-request database lookup
+### No per-request database lookup in identity resolution
 
 `requireCurrentUserId()` reads the `sub` claim and returns. It performs no query: the resource server
 has already verified the token's signature, expiry and issuer. Services that genuinely need a `User`
 entity load it themselves at that point — `raised_by` and `changed_by` are foreign keys, so the row
-has to exist anyway. The lookup therefore happens exactly where it is required and nowhere else. No
-cache was introduced; there is nothing yet to cache.
+has to exist anyway. The lookup therefore happens exactly where it is required and nowhere else.
+
+**Qualified in Phase 7.** The statement above is still true of identity resolution, but it is no longer
+true of the request as a whole: the revocation check in §6.5 consults `users.token_version` and
+`users.active`. That is unavoidable — revocation means consulting authoritative state — and it is
+bounded by a short-TTL cache, so a steady stream of requests from one user costs **no SQL** while
+revocation performed on this instance still takes effect immediately. Setting
+`app.security.session.state-cache-ttl=0` trades that back for one small indexed select per request, in
+exchange for immediate cluster-wide revocation. See §6.5 for the full trade.
 
 ### Fail-closed
 
@@ -494,6 +522,97 @@ cluster-wide throttling.
 once. It is the blunt remedy if a misconfigured threshold starts locking real users out.
 `app.security.rate-limit.enabled=false` disables throttling entirely.
 
+---
+
+## 5b. Session lifecycle — refresh tokens (Phase 7)
+
+### The problem
+
+Access tokens live 30 minutes. Before Phase 7 there was nothing to exchange for a new one, so a client
+staying signed in had to re-submit the password every half hour — which in practice pushes applications
+towards **caching the password**, the exact opposite of what short-lived tokens are for. There was also
+no way to end a session at all: no logout, and no effect from changing a password.
+
+### The design
+
+```
+POST /api/auth/login    -> access token (30m) + refresh token (7d), new family
+POST /api/auth/refresh  -> NEW access token + NEW refresh token; the one presented is consumed
+POST /api/auth/logout   -> revokes that family
+POST /api/auth/logout-all -> revokes every family AND bumps users.token_version
+```
+
+| Property | Choice | Reasoning |
+|---|---|---|
+| Format | **Opaque**, 256 bits from `SecureRandom`, base64url | Nothing to read, nothing to tamper with. A second JWT could not be revoked, because nothing would be recorded server-side to compare against — and the whole value of the row is that the server holds authoritative state about this one credential |
+| Storage | **Hex SHA-256 of the token**; the plaintext is never written anywhere | A database disclosure yields no usable session credentials |
+| Why not BCrypt | The token is 256 bits of CSPRNG output, not a human-chosen password | There is no low-entropy guess space for a slow hash to defend. BCrypt also salts, so lookup would mean verifying against *every* row — a deterministic hash is what makes the unique index usable |
+| Lifetime | `app.security.session.refresh-ttl`, default **7 days** | Long enough not to ask for a password daily; short enough that an abandoned session dies on its own |
+| Rotation | **Every refresh issues a replacement** and consumes the token presented | Bounds what a stolen refresh token is worth: it is useful only until the legitimate client next refreshes |
+| Replay | A token used twice revokes the **whole family** | See below |
+| Session cap | `app.security.session.max-sessions-per-user`, default **10**; oldest revoked past it | Bounds how many devices one leaked password can accumulate, and bounds the table. The oldest are dropped rather than the newest refused, so a legitimate sign-in is never blocked by stale sessions |
+
+### Replay detection, and why it revokes the whole family
+
+Each login starts a *family*; each refresh issues a successor inside it. If a token that has already
+been exchanged is presented again, that is either a stolen token being replayed, or the real client
+replaying after a thief already rotated. **The two are indistinguishable from the server**, so the safe
+reading of "this credential is in two places" is that it is compromised: the entire family is revoked
+and both parties re-authenticate.
+
+Revoking only the replayed token would be pointless — the thief's successor, obtained by rotating the
+stolen token, would stay perfectly valid. Signing the innocent party out is the intended cost, not a
+rough edge; it is one re-authentication.
+
+Families are scoped per login, so a compromised chain on one device does not end sessions on another.
+There is a test for exactly that.
+
+### Concurrency
+
+Two refreshes racing with the same token is a real case — a client with parallel requests all noticing
+a 401 at once. It is resolved by the **database**, not by locking: the revoking update is conditional on
+the row still being live, so exactly one racer updates a row and the loser sees zero rows changed and
+is treated as a replay. Reading the row, deciding in Java, then writing would let both racers through,
+and a stolen token would rotate happily alongside the real client's.
+
+A client that must tolerate parallel refreshes should serialise them — the normal expectation for a
+rotating-token client.
+
+### A bug worth recording
+
+The first version revoked the family and *then* threw the 401. The throw rolled the transaction back,
+and with it the revocation: a replayed token produced a 401 and left the thief's successor valid. The
+detection logged a warning and achieved nothing. `SessionLifecycleSecurityTest` caught it; the fix is
+`RefreshTokenFamilyRevoker`, which commits in its own transaction (`REQUIRES_NEW`) before the exception
+is thrown. `rotate` is ordered so that every path reaching it holds no row locks, since a new
+transaction cannot wait out the suspended one.
+
+### Why refresh is not rate-limited
+
+Login throttling exists because a password is low-entropy and guessable. A refresh token is 256 bits
+from a CSPRNG — there is nothing to guess, so a limiter would add state and a lockout vector for no
+protection. What protects the endpoint is rotation plus replay detection: a token works once, and a
+second use kills the session. General request-rate limiting remains open (§11).
+
+### Housekeeping
+
+Rows are **revoked, never deleted** by the request paths, because replay detection has to tell "already
+rotated" from "never existed". `ExpiredRefreshTokenPurge` therefore deletes rows past
+`app.security.session.expired-retention` (default 7 days) beyond their expiry, on
+`app.security.session.purge-cron` (default 03:15 daily). Retention exists so a detected replay is still
+investigable after the tokens involved have expired.
+
+Only **expiry** decides deletion, never revocation: a revoked but unexpired row must stay findable,
+because a replay of it is precisely what must be caught.
+
+### Client guidance
+
+- Store the refresh token where page script cannot read it; it is the long-lived credential.
+- **Replace your stored pair on every refresh.** Keeping the old refresh token means presenting a spent
+  one next time, and having the session revoked as a suspected replay.
+- A 401 from `/api/auth/refresh` means discard both tokens and sign in again — not retry.
+- A successful own-password change ends the current session too, so expect one 401 and a fresh login.
+
 ## 6. JWT details
 
 ### 6.1 Signing
@@ -515,28 +634,108 @@ will not validate on another instance. There is no insecure default and no commi
 | `iat`, `exp` | issued-at and expiry, from `app.security.jwt.ttl` |
 | `email` | convenience for the client |
 | `role` | the user's `Role`, from which authorities are derived per request |
+| `tv` | the account's revocation counter at issue time (Phase 7) — see §6.5 |
+| `jti` | a unique id per token, so one token is identifiable in logs without logging its value |
 
 Granted authorities are deliberately **not** in the token; see §3.4.
 
 ### 6.3 Validation
 
-`NimbusJwtDecoder` checks the signature and, via `JwtValidators.createDefaultWithIssuer`, the expiry
-and issuer. Default clock skew applies. A garbage, tampered or foreign-signed token is a 401; there are
-tests for each.
+Three layers, all of which must pass, all inside the `JwtDecoder` — so a rejected token never becomes
+an `Authentication` that a controller, a `@PreAuthorize` expression or `CurrentUserProvider` could act
+on:
+
+1. **Signature**, against whichever key in the configured set the token's `kid` header names,
+   restricted to HS256. Pinning the algorithm matters: honouring whatever the token's own header asks
+   for is how `alg: none` and public-key-as-HMAC-secret confusion attacks work.
+2. **Standard claims** — expiry, not-before and issuer, via `JwtValidators.createDefaultWithIssuer`.
+   Default clock skew applies.
+3. **Revocation** — `AccessTokenRevocationValidator`; see §6.5.
+
+A garbage, tampered or foreign-signed token is a 401; there are tests for each.
 
 **Token lifetime**: `app.security.jwt.ttl`, default **30 minutes**.
 
-### 6.4 Current limitations
+### 6.5 Revocation — closed in Phase 7
 
-These are **known limitations of the chosen design, not defects**, and were deliberately left for a
-later phase:
+Phases 4 and 5 both recorded the same open limitation: a signed, unexpired token stayed valid no matter
+what happened to the account behind it, so **a deactivated user kept read access for the rest of the
+token's lifetime**. Phase 7 closes it.
 
-- **No revocation before expiry.** A stateless token stays valid until `exp`. Deactivating a user
-  prevents new logins but does not invalidate a token already issued to them, so a deactivated user
-  retains read access for up to the remaining token lifetime. The present mitigation is the short TTL.
-- **No refresh-token flow.** Clients re-authenticate when the token expires.
-- **A single symmetric signing key**, shared by issuer and validator.
-- **No key rotation.** Changing the secret invalidates every outstanding token at once.
+`users.token_version` is a counter. Every issued token carries the value current at issue time in its
+`tv` claim, and the validator refuses any token whose claim no longer matches. One increment therefore
+invalidates every outstanding token for that user, with no denylist to grow without bound.
+
+A counter rather than a "revoked before" timestamp deliberately: a counter needs no clock agreement
+between issuer and verifier, and cannot be defeated by skew or by two revocations landing in the same
+clock tick.
+
+**What increments it**
+
+| Event | Endpoint | Also revokes refresh tokens |
+|---|---|---|
+| Sign out everywhere | `POST /api/auth/logout-all` | yes |
+| Own password change | `PATCH /api/users/me/password` | yes |
+| Administrative password reset | `POST /api/users/{id}/password-reset` | yes |
+| Deactivation | `PATCH /api/users/{id}/status` | yes |
+| Role change | `PATCH /api/users/{id}/role` | yes |
+| Administrative force sign-out | `DELETE /api/users/{id}/sessions` | yes |
+
+The validator also checks `active` independently of the counter, so an account disabled by a direct
+database edit — where nothing bumped the counter — is still refused.
+
+**Tokens issued before Phase 7** carry no `tv` claim and are refused as malformed. That is the only
+safe reading of "this token predates revocation support", and it costs at most one re-login.
+
+**The cost, stated honestly.** Checking revocation means consulting authoritative state on requests a
+self-contained JWT was meant to answer alone. One query per request would break the property Phase 3
+measured and Phase 5 preserved — two SQL statements per ticket page at any size. So
+`CachingPrincipalStateRegistry` caches the two-column lookup for `app.security.session.state-cache-ttl`
+(default **15s**) and every revoking code path invalidates the entry write-through — **twice: once
+immediately, and again once the transaction completes.**
+
+The second invalidation is not belt-and-braces. The new counter value is invisible to other
+transactions until the revoking one commits, so a concurrent request arriving between the invalidation
+and the commit would re-read the *old* version and cache it again — and the token being revoked would
+keep working for up to the cache TTL. The window is narrow, which is precisely what makes it the kind
+of defect that survives review and then fails rarely. The hook is `afterCompletion`, not `afterCommit`,
+so a rollback clears anything cached mid-transaction too; dropping a cache entry is always safe.
+
+- On a single instance, revocation is **immediate** and the hot path still costs **no SQL**.
+- The TTL bounds only changes this instance did not make: a direct database edit, or another instance.
+- **Set the TTL to `0` for a multi-instance deployment.** That disables caching, making revocation
+  immediate everywhere, at one small indexed select per authenticated request.
+- **No claim is made that the default is cluster-wide.** With N instances and a 15-second TTL, a
+  revocation on one is honoured by the others within 15 seconds.
+
+### 6.6 Key rotation — added in Phase 7
+
+Previously there was one signing secret, so changing it signed every user out at once. The practical
+consequence of that cost is that the secret never gets rotated, which is the worst outcome available.
+
+Tokens now carry a `kid` header and the decoder selects the verification key by it from a set:
+
+1. Put the new secret in `app.security.jwt.secret` with a new `app.security.jwt.key-id`, and move the
+   **old** secret and its id into `app.security.jwt.previous-keys[0]`.
+2. Restart. New tokens are signed with the new key; tokens already in circulation still verify against
+   the old one, so nobody is signed out.
+3. Once the access-token TTL has elapsed, **delete the `previous-keys` entry.**
+
+Step 3 is what makes this a rotation rather than an accumulation — a retained key is a key that can
+still verify a token, so the overlap is deliberately short. Every key, retained ones included, is
+length-checked at startup.
+
+### 6.7 Remaining limitations
+
+- **Cluster-wide revocation latency** at the default cache TTL — see §6.5. Set the TTL to `0` to remove
+  it, or replace `PrincipalStateRegistry` with a shared-store implementation.
+- **No forced password change on next sign-in.** An administrative reset ends every session and sets a
+  password the administrator chose, but nothing compels the user to change it afterwards. That needs a
+  flag, a gate on every other endpoint while it is set, and a change endpoint usable without an
+  ordinary session — a feature, listed in §11 rather than half-built.
+- **No email-based self-service reset.** Recovery goes through an administrator.
+- **HS256, symmetric.** Every instance that validates a token can also mint one. Asymmetric signing
+  (RS256/ES256) would separate those, and the `kid` machinery added here is the precondition for it.
 
 ---
 
@@ -551,7 +750,14 @@ is not sensitive.
 | Database user | `spring.datasource.username` | `DB_USERNAME` |
 | Database password | `spring.datasource.password` | `DB_PASSWORD` |
 | JWT signing key | `app.security.jwt.secret` | `APP_JWT_SECRET` |
+| Active signing key id | `app.security.jwt.key-id` | `APP_JWT_KEY_ID` (default `primary`) |
+| Retired signing keys | `app.security.jwt.previous-keys[n].{key-id,secret}` | — (set during a rotation only; §6.6) |
 | Token lifetime | `app.security.jwt.ttl` | — (default `30m`) |
+| Refresh-token lifetime | `app.security.session.refresh-ttl` | `APP_REFRESH_TTL` (default `7d`) |
+| Revocation-check cache TTL | `app.security.session.state-cache-ttl` | `APP_SESSION_STATE_CACHE_TTL` (default `15s`; **set `0` for multi-instance**) |
+| Expired-token retention | `app.security.session.expired-retention` | `APP_SESSION_EXPIRED_RETENTION` (default `7d`) |
+| Max sessions per user | `app.security.session.max-sessions-per-user` | `APP_MAX_SESSIONS_PER_USER` (default `10`, `0` = no cap) |
+| Token purge schedule | `app.security.session.purge-cron` | `APP_SESSION_PURGE_CRON` (default `0 15 3 * * *`) |
 | Allowed browser origins | `app.security.cors.allowed-origins` | `APP_CORS_ORIGINS` |
 | Swagger public | `app.security.swagger-public` | `APP_SWAGGER_PUBLIC` |
 | Bootstrap admin email | `app.security.bootstrap-admin.email` | `APP_BOOTSTRAP_ADMIN_EMAIL` |
@@ -620,7 +826,9 @@ Observed on a live response (`curl -D -` against `POST /api/auth/login`):
 
 | Endpoint | Note |
 |---|---|
-| `POST /api/auth/login` | The only functional public endpoint |
+| `POST /api/auth/login` | Email and password are the credential |
+| `POST /api/auth/refresh` | **Not unauthenticated** — the refresh token in the body is the credential, verified against `refresh_tokens` before anything happens. Public because by the time a client refreshes, its access token has expired; that is the point of it |
+| `POST /api/auth/logout` | Same: the refresh token is the credential. Always 204, so it is not an oracle for guessed tokens |
 | `/error` | Container error dispatch |
 | `OPTIONS /**` | CORS preflight |
 | `/v3/api-docs/**`, `/swagger-ui/**` | Only when `app.security.swagger-public=true` (default). Set it to `false` in production: the schema of every endpoint is information an attacker does not need |
@@ -635,10 +843,16 @@ Observed on a live response (`curl -D -` against `POST /api/auth/login`):
 | GET | `/api/tickets/{id}/history` | `TICKET_READ_OWN` + involvement, or `TICKET_READ_ALL` — the same check, applied to the ticket, so the trail cannot be read around it |
 | PUT | `/api/tickets/{ticketId}/assign/{userId}` | `TICKET_ASSIGN` |
 | PATCH | `/api/tickets/{ticketId}/status` | `TICKET_STATUS_CHANGE` |
+| POST | `/api/auth/logout-all` | authenticated — acts on the caller only. Ends every session *and* invalidates their outstanding access tokens, including the one making the call |
+| GET | `/api/auth/me` | authenticated — the caller's identity and effective permissions, so a client need not decode the token or reimplement the role mapping. Advisory: the server enforces permissions on every request regardless |
 | POST | `/api/users` | `USER_MANAGE` |
 | GET | `/api/users` | `USER_READ` |
 | GET | `/api/users/{id}` | authenticated, and `USER_READ` or own record |
-| PATCH | `/api/users/me/password` | authenticated — acts only on the caller's own account, and verifies the current password. Deliberately no permission: the bootstrap administrator must be able to replace the password it was deployed with. Already-issued tokens stay valid until expiry (§ stateless-JWT trade-off) |
+| PATCH | `/api/users/me/password` | authenticated — acts only on the caller's own account, and verifies the current password. Deliberately no permission: the bootstrap administrator must be able to replace the password it was deployed with. **Ends every session, including the current one** — see below |
+| POST | `/api/users/{id}/password-reset` | `USER_MANAGE` — administrative recovery, no current password required. Ends every session the target holds |
+| PATCH | `/api/users/{id}/status` | `USER_MANAGE` — activate or deactivate. Cannot target yourself; cannot deactivate the last active administrator. Deactivating ends every session |
+| PATCH | `/api/users/{id}/role` | `USER_MANAGE` — cannot target yourself; cannot demote the last active administrator. Ends every session, so new authorities apply at once |
+| DELETE | `/api/users/{id}/sessions` | `USER_MANAGE` — force sign-out without changing the password or role |
 | GET | `/api/applications`, `/api/applications/{id}`, `/api/applications/active` | `APPLICATION_READ` |
 | POST, PUT, DELETE | `/api/applications`, `/api/applications/{id}` | `APPLICATION_MANAGE` |
 
@@ -674,6 +888,12 @@ Categories:
 | Authorization | `AuthorizationSecurityTest` (10 tests) | every role against every capability, 403 shape, denial is not a 500, unmapped role grants nothing |
 | IDOR / BOLA | `ResourceAccessControlTest` (14 tests) | cross-user ticket and user access, restricted list and count, filter cannot widen, assignee and raiser visibility, unassigned-ticket visibility, no hash in responses |
 | Identity spoofing | `TicketIdentityRegressionTest` | `X-User-Id` cannot override or supply identity; no fallback to user 1 |
+| **Session lifecycle** | `SessionLifecycleSecurityTest` (30 tests) | login returns both tokens; only a hash is stored; rotation; spent and unknown tokens refused; replay revokes the family; families are independent; logout idempotent and not an oracle; logout-all kills a live access token; `/me` shape, permissions and session count; token responses not cacheable |
+| **Revocation and admin controls** | `TokenRevocationSecurityTest` (26 tests) | deactivation, role change, own password change, administrative reset and forced sign-out each refuse an existing access token on the *next* request; self-targeting and last-administrator guards; `USER_MANAGE` on every admin endpoint; 404 and 400 shapes; revocation scoped to one account |
+| Rotation and expiry rules | `unit/RefreshTokenRotationTest` (30 tests, no Docker) | hash-only storage, per-login families, rotation, replay, concurrency loser, expiry boundary, deactivated and passwordless accounts, logout idempotence, version bump, session cap |
+| Revocation verdicts and cache | `unit/AccessTokenRevocationTest` (19 tests, no Docker) | superseded version, deactivated, deleted, missing/unparseable `tv`, unusable subject, identical failure text; cache TTL, write-through invalidation, zero-TTL read-through, negative caching, bounding |
+| Key rotation and token crypto | `unit/JwtKeyRotationTest` (15 tests, no Docker) | key set, retained keys, short/duplicate/incomplete keys refused, hash shape and determinism, 256-bit opaque tokens, 10,000 distinct |
+| Admin guards | `unit/AccountAdministrationGuardsTest` (17 tests, no Docker) | self-deactivation, self-demotion, last-active-administrator, no-op changes, which operations revoke and which do not |
 | Password handling | `AuthenticationSecurityTest`, `ResourceAccessControlTest` | hashing, uniform failure, nothing exposed |
 | Audit actor | `TicketStatusIntegrityRegressionTest` | the actor is the authenticated caller, not the assignee |
 | 401 / 403 mapping | `GlobalExceptionHandlerTest` (unit, no Docker) | status and body for each exception type |
@@ -686,12 +906,22 @@ Categories:
 **Future enhancements** — candidates for a later phase. None of these is a live vulnerability in the
 current design; each is a known limit, recorded so it is a decision rather than an oversight.
 
-1. **Token revocation strategy.** Today a token is valid until `exp` (§6.4). Options include a short-TTL
-   access token plus a revocable refresh token, or a denylist of revoked token ids.
-2. **Refresh tokens.** Would let the access-token TTL shrink without forcing frequent re-login.
-3. **Signing-key rotation.** Multiple active keys with a `kid` header, so a key can be retired without
-   invalidating every outstanding token.
-4. **External identity provider integration.** The seam already exists (§1.4).
+1. ~~**Token revocation strategy.**~~ **Done in Phase 7** — see §6.5. A `tv` claim is compared against
+   `users.token_version` inside the decoder, so one increment ends every outstanding token for an
+   account. A denylist of token ids was considered and rejected: it grows without bound and needs its
+   own eviction policy, where a counter needs neither. One piece of this area is still open —
+   **cluster-wide revocation latency** at the default cache TTL; set
+   `app.security.session.state-cache-ttl=0` to remove it, or replace `PrincipalStateRegistry` with a
+   shared-store implementation.
+2. ~~**Refresh tokens.**~~ **Done in Phase 7** — see §5b. Opaque, hashed at rest, rotated on every use,
+   with family-wide revocation on replay.
+3. ~~**Signing-key rotation.**~~ **Done in Phase 7** — see §6.6. Tokens carry a `kid` and the decoder
+   selects from a key set, so a secret can be retired after a short overlap instead of signing everyone
+   out. The same machinery is the precondition for moving to asymmetric signing, which remains open.
+4. **External identity provider integration.** The seam already exists (§1.4). Note that a provider's
+   own revocation semantics would replace §6.5's third validation layer.
+4a. **Forced password change after an administrative reset**, and **email-based self-service reset** —
+   see §6.7. Recovery currently goes through an administrator, who chooses the replacement password.
 5. ~~**Rate limiting and brute-force protection.**~~ **Done in Phase 5** — see §5a. Two remaining pieces
    of this area are still open: a **distributed limiter** so throttling is cluster-wide rather than
    per-instance (§5a, "Single-instance limitation"), and **general request-rate limiting** beyond login —

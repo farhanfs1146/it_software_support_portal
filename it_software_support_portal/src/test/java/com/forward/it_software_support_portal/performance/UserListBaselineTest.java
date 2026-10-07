@@ -117,20 +117,66 @@ class UserListBaselineTest extends AbstractIntegrationTest {
         List<String> sql = capturingSql(
                 () -> rest.exchange("/api/users", HttpMethod.GET, auth, String.class));
 
-        List<String> listingQueries = sql.stream()
+        List<String> usersQueries = sql.stream()
                 .map(String::toLowerCase)
                 .filter(statement -> statement.contains("from users"))
                 .toList();
-        assertThat(listingQueries)
-                .as("the listing must have queried the users table, or this test proves nothing")
-                .hasSize(1);
 
-        assertThat(listingQueries)
+        assertThat(usersQueries)
+                .as("the listing must have queried the users table, or this test proves nothing")
+                .isNotEmpty();
+
+        // Asserted across EVERY statement that touches users, not just the listing. That is the
+        // stronger property and the one that actually matters: it does not matter which query would
+        // have pulled the hash into memory.
+        assertThat(usersQueries)
                 .as("""
                         THE POINT OF UserRow: the hash is never fetched, so there is no hash in memory \
                         to leak through a logger, a debugger, a serialization change or a future DTO \
                         field. Defending the response body alone would leave all of those open.""")
                 .allSatisfy(statement -> assertThat(statement).doesNotContain("password_hash"));
+
+        assertThat(usersQueries)
+                .filteredOn(statement -> statement.contains("employee_code"))
+                .as("exactly one query produces the page itself")
+                .hasSize(1);
+
+        // Phase 7 added a second statement against users on the FIRST authenticated request per user
+        // per cache TTL: the access-token revocation check. It is pinned here rather than merely
+        // tolerated, because an unbounded check on this path is exactly the regression that would
+        // undo Phase 3's work - and because it must never be the query that reads the hash.
+        assertThat(usersQueries)
+                .filteredOn(statement -> statement.contains("token_version"))
+                .as("""
+                        The revocation check reads two columns and nothing else. It is also cached, so \
+                        subsequent requests from the same user issue no statement at all - see \
+                        docs/SECURITY.md 6.5. Set app.security.session.state-cache-ttl=0 and this \
+                        becomes one select per request by design.""")
+                .hasSizeLessThanOrEqualTo(1)
+                .allSatisfy(statement -> assertThat(statement)
+                        .doesNotContain("full_name")
+                        .doesNotContain("email"));
+    }
+
+    @Test
+    @DisplayName("the revocation check is cached, so a repeat request costs no extra statement")
+    void revocationCheckIsNotPaidOnEveryRequest() {
+        long adminId = admin();
+        HttpEntity<Void> auth = bearer(adminId);
+
+        // The first request populates the cache; the statement counted here is the steady state.
+        rest.exchange("/api/users", HttpMethod.GET, auth, String.class);
+
+        List<String> sql = capturingSql(
+                () -> rest.exchange("/api/users", HttpMethod.GET, auth, String.class));
+
+        assertThat(sql.stream().filter(s -> s.toLowerCase().contains("token_version")).toList())
+                .as("""
+                        Phase 3 measured two statements per page at any size and Phase 5 preserved it. \
+                        Checking revocation with a query per request would have broken that; the \
+                        short-TTL cache plus write-through invalidation is what keeps the steady state \
+                        free while a local revocation still takes effect immediately.""")
+                .isEmpty();
     }
 
     @Test

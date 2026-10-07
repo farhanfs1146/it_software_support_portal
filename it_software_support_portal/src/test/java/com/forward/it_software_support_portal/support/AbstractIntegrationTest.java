@@ -5,6 +5,8 @@ import com.forward.it_software_support_portal.repository.UserRepository;
 import com.forward.it_software_support_portal.security.JwtTokenService;
 import com.forward.it_software_support_portal.security.ratelimit.InMemoryLoginAttemptLimiter;
 import com.forward.it_software_support_portal.security.ratelimit.LoginAttemptLimiter;
+import com.forward.it_software_support_portal.security.session.CachingPrincipalStateRegistry;
+import com.forward.it_software_support_portal.security.session.PrincipalStateRegistry;
 import jakarta.persistence.EntityManagerFactory;
 import org.hibernate.SessionFactory;
 import org.hibernate.stat.Statistics;
@@ -95,6 +97,7 @@ public abstract class AbstractIntegrationTest {
      */
     private static final String TRUNCATE_ALL = """
             TRUNCATE TABLE
+                refresh_tokens,
                 ticket_history_tracking,
                 ticket_history,
                 ticket_attachments,
@@ -136,6 +139,23 @@ public abstract class AbstractIntegrationTest {
 
     @Autowired
     private LoginAttemptLimiter loginAttemptLimiter;
+
+    /**
+     * Clears the access-token revocation cache between tests.
+     *
+     * <p>Required, not hygiene. Every test truncates {@code users} and inserts fresh rows, so ids are
+     * reused across tests while the cache is keyed on id. Without this, a test that deactivated user 1
+     * would leave "user 1 is inactive" cached, and the next test's brand-new user 1 would be refused.
+     */
+    @BeforeEach
+    void resetPrincipalStateCache() {
+        if (principalStateRegistry instanceof CachingPrincipalStateRegistry caching) {
+            caching.clearAll();
+        }
+    }
+
+    @Autowired
+    protected PrincipalStateRegistry principalStateRegistry;
 
     /**
      * The default request factory rejects PATCH, which {@code PATCH /api/tickets/{id}/status} needs.
@@ -383,6 +403,74 @@ public abstract class AbstractIntegrationTest {
     /** Sends a caller-supplied token string verbatim, for forged/tampered-credential tests. */
     protected ResponseEntity<Map<String, Object>> getObjectWithToken(String rawToken, String path) {
         return rest.exchange(path, HttpMethod.GET, entityWithRawToken(null, rawToken), OBJECT);
+    }
+
+    protected ResponseEntity<Map<String, Object>> postObjectWithToken(
+            String rawToken, String path, Map<String, ?> body) {
+        return rest.exchange(path, HttpMethod.POST, entityWithRawToken(body, rawToken), OBJECT);
+    }
+
+    protected ResponseEntity<Void> postWithToken(String rawToken, String path, Map<String, ?> body) {
+        return rest.exchange(path, HttpMethod.POST, entityWithRawToken(body, rawToken), Void.class);
+    }
+
+    protected ResponseEntity<Void> postAs(Long actorUserId, String path, Map<String, ?> body) {
+        return rest.exchange(path, HttpMethod.POST, entity(body, actorUserId), Void.class);
+    }
+
+    protected ResponseEntity<Map<String, Object>> patchObjectAs(
+            Long actorUserId, String path, Map<String, ?> body) {
+        return rest.exchange(path, HttpMethod.PATCH, entity(body, actorUserId), OBJECT);
+    }
+
+
+    /**
+     * Signs in over real HTTP and returns the whole token pair.
+     *
+     * <p>Used rather than {@code tokenFor(...)} wherever the test is about the session itself: only a
+     * real login creates the {@code refresh_tokens} row that refresh, logout and rotation act on.
+     * {@code tokenFor} mints an access token directly and deliberately creates no session.
+     */
+    protected Map<String, Object> login(String email, String password) {
+        ResponseEntity<Map<String, Object>> response = postObject("/api/auth/login",
+                Map.of("email", email, "password", password));
+        if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
+            throw new IllegalStateException(
+                    "Login failed for " + email + ": HTTP " + response.getStatusCode());
+        }
+        return response.getBody();
+    }
+
+    protected String accessTokenOf(Map<String, Object> loginResponse) {
+        return (String) loginResponse.get("accessToken");
+    }
+
+    protected String refreshTokenOf(Map<String, Object> loginResponse) {
+        return (String) loginResponse.get("refreshToken");
+    }
+
+    /** Exchanges a refresh token, returning the raw response so a test can assert on failures too. */
+    protected ResponseEntity<Map<String, Object>> refresh(String refreshToken) {
+        return postObject("/api/auth/refresh", Map.of("refreshToken", refreshToken));
+    }
+
+    protected int liveSessionRows(long userId) {
+        Integer n = jdbc.queryForObject(
+                "SELECT count(*) FROM refresh_tokens WHERE user_id = ? AND revoked_at IS NULL",
+                Integer.class, userId);
+        return n == null ? 0 : n;
+    }
+
+    protected int tokenVersionOf(long userId) {
+        Integer n = jdbc.queryForObject(
+                "SELECT token_version FROM users WHERE id = ?", Integer.class, userId);
+        return n == null ? 0 : n;
+    }
+
+    protected List<String> revocationReasonsFor(long userId) {
+        return jdbc.queryForList(
+                "SELECT revoked_reason FROM refresh_tokens WHERE user_id = ? AND revoked_reason "
+                        + "IS NOT NULL ORDER BY id", String.class, userId);
     }
 
     /** Sends arbitrary extra headers, for proving a legacy header cannot influence identity. */

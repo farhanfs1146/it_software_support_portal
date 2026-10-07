@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import com.forward.it_software_support_portal.security.InvalidCredentialsException;
 import com.forward.it_software_support_portal.security.ratelimit.TooManyLoginAttemptsException;
+import com.forward.it_software_support_portal.security.session.InvalidRefreshTokenException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpHeaders;
@@ -201,6 +202,25 @@ public class GlobalExceptionHandler {
     public ProblemDetail handleInvalidCredentials(InvalidCredentialsException e) {
         log.info("Failed authentication attempt");
         return problem(HttpStatus.UNAUTHORIZED, "Authentication failed", "Invalid email or password.");
+    }
+
+    /**
+     * A refresh token could not be exchanged - <strong>401</strong>.
+     *
+     * <p>Uninformative for the same reason as login, and it matters more here. The holder of a refresh
+     * token that failed is quite possibly an attacker holding a stolen one, and the interesting
+     * question for them is <em>why</em> it failed: "expired" says the token was real,
+     * "already used" says the victim is still active, "unknown" says it was never valid. One response
+     * for all of them answers none of those.
+     *
+     * <p>A distinct title from login's, because the client's correct reaction differs: on a failed
+     * refresh it must discard its stored tokens and send the user back to sign in, rather than retry.
+     */
+    @ExceptionHandler(InvalidRefreshTokenException.class)
+    public ProblemDetail handleInvalidRefreshToken(InvalidRefreshTokenException e) {
+        log.info("Failed refresh-token exchange");
+        return problem(HttpStatus.UNAUTHORIZED, "Session expired",
+                "The refresh token is invalid or has expired. Sign in again.");
     }
 
     /**
