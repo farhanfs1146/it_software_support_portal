@@ -1,0 +1,59 @@
+-- Index for the paged user directory (Phase 6, audit finding P2-1).
+--
+-- One index is created here, and one obvious-looking candidate is deliberately NOT created. Both
+-- decisions come from EXPLAIN (ANALYZE, BUFFERS) against 50,000 users and 500 applications on
+-- PostgreSQL 18, with realistic name duplication (50,000 rows, only 200 distinct full names - so
+-- full_name is emphatically not unique).
+
+--------------------------------------------------------------------------------------------------
+-- idx_users_full_name_id  (full_name, id)
+--------------------------------------------------------------------------------------------------
+-- Supports:  the default directory page - ORDER BY full_name ASC, id ASC LIMIT n
+--            (id is the tiebreaker that keeps offset paging stable when names repeat, which at this
+--            data distribution means 250 users share each name)
+-- Measured, first page:
+--            before: Seq Scan on users + top-N heapsort over all 50,000 rows
+--                    1,105 shared buffers, 55.6 ms
+--            after:  Index Scan using idx_users_full_name_id
+--                       23 shared buffers,  0.16 ms
+--            -> 48x fewer buffers. The sort disappears entirely: the index already holds the order.
+-- Write cost: 2 MB of index against an 8.8 MB table (~23%), maintained when a user is created or
+--            renamed. Both are rare compared with reading the directory, which every administrative
+--            screen does.
+--
+-- HONEST NOTE ON DEEP PAGES
+-- At OFFSET 2,000 (page 100) the index makes execution 51x faster (113 ms -> 2.2 ms) but reads MORE
+-- buffers (1,145 -> 2,032), because an ordered walk of 2,020 index-and-heap rows replaces one sort of
+-- 50,000. Offset pagination is inherently O(offset) whatever the index: the real fix for deep paging
+-- is keyset ("seek") pagination, which is a contract change and therefore out of scope for this
+-- phase. It is recorded in docs/PERFORMANCE.md as a known limitation rather than hidden here.
+CREATE INDEX idx_users_full_name_id
+    ON users (full_name, id);
+
+--------------------------------------------------------------------------------------------------
+-- REJECTED CANDIDATE, recorded so it is not re-proposed
+--------------------------------------------------------------------------------------------------
+-- idx_applications_app_name_id (app_name, id) was measured and rejected.
+-- The applications catalogue is a reference table, not transactional data: 500 rows occupy 5 pages,
+-- so the default page already costs 5 shared buffers and 0.35 ms with a Seq Scan and top-N heapsort.
+-- The active-only variant measures the same 5 buffers. There is no room for an index to help - it
+-- would be write overhead and a second structure to keep correct in exchange for nothing measurable.
+-- If this catalogue ever reaches tens of thousands of rows, re-measure and revisit.
+--
+-- Also deliberately not created:
+--   * users.email, users.employee_code - the UNIQUE constraints from V1 already created
+--     users_email_key and users_employee_code_key. Verified: ORDER BY email ASC, id ASC is an
+--     Index Scan feeding an Incremental Sort at 9 buffers. A second index would duplicate the first.
+--   * users.role, users.active - whitelisted as sort keys but low cardinality (7 roles, 2 flags) and
+--     never the default, so the planner would prefer a scan anyway.
+--   * A covering index including email/employee_code/department_id to make the page index-only -
+--     not attempted: at 23 buffers the page query is already far below the count query's cost, so
+--     the remaining win would be invisible and the index would roughly double in size.
+--   * Nothing for the count query. SELECT count(u.id) FROM users already resolves to an Index Only
+--     Scan on users_pkey (139 buffers, 10.8 ms, zero heap fetches) once the visibility map is set.
+--     An exact count must still read every entry; that is the cost of exact totals, not a missing
+--     index. Spring Data already skips the count when a page cannot have a successor.
+--
+-- NOTE ON PRODUCTION DEPLOYMENT
+-- Same caveat as V12: this statement takes a brief ACCESS EXCLUSIVE lock on users. Against a large
+-- live table use CREATE INDEX CONCURRENTLY in a non-transactional migration instead.
